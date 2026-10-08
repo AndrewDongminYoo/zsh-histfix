@@ -162,10 +162,12 @@ def preview(before, args):
     return b"".join(output), len(changes)
 
 
-def atomic_write(target, data, mode):
+def atomic_write(target, data, mode, *, gid=None):
     fd, name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
+            if gid is not None and os.fstat(stream.fileno()).st_gid != gid:
+                os.fchown(stream.fileno(), -1, gid)
             os.fchmod(stream.fileno(), mode)
             stream.write(data)
             stream.flush()
@@ -270,7 +272,7 @@ def main(argv):
             list(records(pending))
             with history_lock(target) as stream:
                 atomic_write(target, append_records(stream.read(), pending),
-                             stat.S_IMODE(info.st_mode))
+                             stat.S_IMODE(info.st_mode), gid=info.st_gid)
         return 0
     before = target.read_bytes()
     backup = Path(str(target) + ".histfix-undo.json")
@@ -303,7 +305,9 @@ def main(argv):
                                          int(os.environ["HISTFIX_HISTORY_COUNT"])) if memory_target else None
     with history_lock(target) as stream:
         current = target.stat()
-        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino) or stream.read() != before:
+        if ((current.st_dev, current.st_ino, current.st_mode, current.st_uid, current.st_gid)
+                != (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
+                or stream.read() != before):
             raise ValueError("history changed during preview; run histfix again")
         if memory_target is not None:
             atomic_write(memory_target, memory_after, 0o600)
@@ -315,7 +319,7 @@ def main(argv):
             atomic_write(backup, saved, 0o600)
         elif backup.read_bytes() != undo_data:
             raise ValueError("undo record changed during preview; run histfix again")
-        atomic_write(target, after, stat.S_IMODE(info.st_mode))
+        atomic_write(target, after, stat.S_IMODE(info.st_mode), gid=info.st_gid)
         if args.command == "undo":
             backup.unlink()
     print("History updated." if args.command == "replace" else "Replacement undone.")

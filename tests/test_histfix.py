@@ -381,13 +381,13 @@ with open(sys.argv[1], 'r+b') as stream:
 
         checked_targets = []
 
-        def checked_write(target, data, mode):
+        def checked_write(target, data, mode, **kwargs):
             if target == self.history.resolve():
                 checked_targets.append(target)
                 result = subprocess.run([sys.executable, "-c", probe, str(target)],
                                         capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 1, "fcntl lock released before write")
-            original_write(target, data, mode)
+            original_write(target, data, mode, **kwargs)
 
         pending = self.home / "pending"
         pending.write_bytes(b"echo later\n")
@@ -425,6 +425,42 @@ with open(sys.argv[1], 'r+b') as stream:
         self.assertIn("locked", result.stderr)
         self.assertTrue(lock.is_symlink())
         self.assertEqual(self.history.read_bytes(), b"echo old\n")
+
+    def test_permission_change_during_preview_refuses_replacement(self):
+        self.write(b"echo old\n")
+        self.history.chmod(0o644)
+        with subprocess.Popen(
+            [sys.executable, str(HELPER), "replace", "old", "new"],
+            env=self.env, text=True, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ) as process:
+            self.assertIn('1 - "echo old"', process.stdout.readline())
+            self.assertIn('1 + "echo new"', process.stdout.readline())
+            self.assertIn("1 entries", process.stdout.readline())
+            self.history.chmod(0o600)
+            _, error = process.communicate("y\n", timeout=10)
+            self.assertEqual(process.returncode, 2, error)
+            self.assertIn("changed during preview", error)
+        self.assertEqual(self.history.read_bytes(), b"echo old\n")
+        self.assertEqual(self.history.stat().st_mode & 0o777, 0o600)
+
+    def test_history_group_and_mode_survive_replace_undo_and_flush(self):
+        self.write(b"echo old\n")
+        groups = [gid for gid in os.getgroups() if gid != self.history.stat().st_gid]
+        if not groups:
+            self.skipTest("requires a supplementary group")
+        os.chown(self.history, -1, groups[0])
+        self.history.chmod(0o640)
+        pending = self.home / "pending"
+        pending.write_bytes(b"echo later\n")
+        for args, expected in ((('replace', 'old', 'new'), 10), (('undo',), 10),
+                               (('--flush', str(pending)), 0)):
+            with self.subTest(args=args):
+                result = self.run_helper(*args)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                info = self.history.stat()
+                self.assertEqual(info.st_gid, groups[0])
+                self.assertEqual(info.st_mode & 0o777, 0o640)
 
     def test_plain_history_colon_and_control_characters_round_trip(self):
         self.write(b"echo old\rkeep\n\\: old\necho old\\ \n")
