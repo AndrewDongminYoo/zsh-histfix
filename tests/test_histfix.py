@@ -463,6 +463,33 @@ with open(sys.argv[1], 'r+b') as stream:
                 self.assertEqual(info.st_gid, groups[0])
                 self.assertEqual(info.st_mode & 0o777, 0o640)
 
+    def test_flush_uses_metadata_from_the_locked_file(self):
+        spec = importlib.util.spec_from_file_location("histfix_under_test", HELPER)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        original_lock = helper.history_lock
+        pending = self.home / "pending"
+        pending.write_bytes(b"echo later\n")
+        groups = [os.getgid()] + [group for group in os.getgroups() if group != os.getgid()][:1]
+        for group in groups:
+            with self.subTest(group=group):
+                self.write(b"echo old\n")
+                self.history.chmod(0o644)
+
+                @contextmanager
+                def changed_metadata_lock(target):
+                    os.chown(target, -1, group)
+                    target.chmod(0o600)
+                    with original_lock(target) as stream:
+                        yield stream
+
+                with mock.patch.dict(os.environ, HISTFIX_FILE=str(self.history)), \
+                        mock.patch.object(helper, "history_lock", changed_metadata_lock):
+                    self.assertEqual(helper.main(["--flush", str(pending)]), 0)
+                self.assertEqual(self.history.read_bytes(), b"echo old\necho later\n")
+                self.assertEqual(self.history.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(self.history.stat().st_gid, group)
+
     def test_failed_history_write_preserves_prior_undo(self):
         spec = importlib.util.spec_from_file_location("histfix_under_test", HELPER)
         helper = importlib.util.module_from_spec(spec)

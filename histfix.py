@@ -307,6 +307,7 @@ def main(argv):
         if pending:
             list(records(pending))
             with history_lock(target) as stream:
+                info = os.fstat(stream.fileno())
                 atomic_write(target, append_records(stream.read(), pending),
                              stat.S_IMODE(info.st_mode), gid=info.st_gid)
         return 0
