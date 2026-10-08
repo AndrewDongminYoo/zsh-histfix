@@ -105,6 +105,7 @@ It contains history content and is replaced on the next successful replacement.
 If a filesystem write fails, the previous undo record is restored.
 If that restoration also fails, the error identifies a private recovery directory; any prior record retained there is kept for manual recovery.
 `histfix undo` restores the previous content while retaining commands appended after the replacement.
+If deleting the used undo backup fails, undo still refreshes the current shell and reports the retained backup path as a warning.
 If the original final record had no line terminator, flushing or undo adds the required record boundary before retaining appended commands.
 Undo refuses if existing records were changed, reordered, or pruned in the meantime.
 

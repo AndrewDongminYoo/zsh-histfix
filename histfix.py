@@ -358,7 +358,11 @@ def main(argv):
             if backup.read_bytes() != undo_data:
                 raise ValueError("undo record changed during preview; run histfix again")
             atomic_write(target, after, stat.S_IMODE(info.st_mode), gid=info.st_gid)
-            backup.unlink()
+            try:
+                backup.unlink()
+            except OSError as error:
+                print(f"histfix: could not remove undo backup {backup}: {error}",
+                      file=sys.stderr)
     print("History updated." if args.command == "replace" else "Replacement undone.")
     return APPLIED
 

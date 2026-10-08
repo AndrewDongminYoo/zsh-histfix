@@ -712,6 +712,42 @@ HISTFILE=''
                     self.assertTrue(self.history.read_bytes().startswith(
                         b": 100:1;codex --model gpt-6.1-astra\n"))
 
+    def test_undo_backup_cleanup_failure_still_refreshes_shell_history(self):
+        wrapper = self.home / "helper-with-unlink-failure.py"
+        wrapper.write_text(f'''import runpy
+from pathlib import Path
+original_unlink = Path.unlink
+def fail_backup_unlink(target, *args, **kwargs):
+    if target.name.endswith(".histfix-undo.json"):
+        raise OSError("injected backup deletion failure")
+    return original_unlink(target, *args, **kwargs)
+Path.unlink = fail_backup_unlink
+runpy.run_path({str(HELPER)!r}, run_name="__main__")
+''')
+        self.write(b": 100:1;echo old\n")
+        with self.interactive_zsh("setopt EXTENDED_HISTORY") as (send, until, process):
+            send("histfix replace old new")
+            until(b"[y/N] ")
+            send("y")
+            self.assertIn(b"History updated.", until(b"HF> "))
+            send(f"_HISTFIX_HELPER={shlex.quote(str(wrapper))}")
+            until(b"HF> ")
+            send("histfix undo")
+            until(b"[y/N] ")
+            send("y")
+            undo_output = until(b"HF> ")
+            send('print -r -- "UNDO:$? MEMORY:${history[(r)echo*]}"')
+            memory_output = until(b"HF> ")
+            self.assertTrue(self.history.read_bytes().startswith(b": 100:1;echo old\n"))
+            self.assertIn(b"UNDO:0 MEMORY:echo old\r\n", memory_output)
+            self.assertIn(b"Replacement undone.", undo_output)
+            self.assertIn(b"could not remove undo backup", undo_output)
+            self.assertTrue(Path(str(self.history) + ".histfix-undo.json").exists())
+            send("histfix undo")
+            self.assertIn(b"history changed since replacement", until(b"HF> "))
+            send("exit")
+            process.wait(timeout=5)
+
     def test_interactive_refusal_keeps_write_suppressed_events_private(self):
         self.env["HISTFIX_TEST_IGNORE"] = "*secret*"
         for configure in (
