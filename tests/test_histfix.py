@@ -2,6 +2,7 @@
 
 import os
 import importlib.util
+from contextlib import contextmanager
 from pathlib import Path
 import pty
 import select
@@ -152,7 +153,7 @@ class HistfixTests(unittest.TestCase):
 HISTFILE=$1
 HISTSIZE=100
 SAVEHIST=100
-setopt EXTENDED_HISTORY SHARE_HISTORY
+setopt EXTENDED_HISTORY
 fc -R "$HISTFILE"
 source "$2" || exit 90
 print -s -- 'echo unsaved'
@@ -226,6 +227,77 @@ HISTFILE=''
                     self.assertIn(f"echo memory-only-{number}", memory)
                 self.assertIn("echo disk-old", memory)
                 self.assertNotIn(b"memory-only", self.history.read_bytes())
+
+    def test_apply_and_undo_refuse_to_discard_memory_only_events(self):
+        imported = self.home / "imported"
+        imported.write_bytes(b": 90:1;echo memory-only\n")
+        for action in ("replace old new", "undo"):
+            with self.subTest(action=action):
+                self.write(b": 100:1;echo disk-old\n")
+                if action == "undo":
+                    self.assertEqual(self.run_helper("replace", "old", "new").returncode, 10)
+                expected = self.history.read_bytes()
+                result = self.run_zsh('''
+HISTFILE=$1; HISTSIZE=100; SAVEHIST=10
+fc -R "$3"; fc -R "$HISTFILE"
+print -s -- 'fixture-active'
+source "$2"
+histfix ${=4} <<< y
+print -r -- "RESULT:$?"
+print -s -- 'reader-sentinel'
+print -r -- "MEMORY:${(j:|:)history}"
+HISTFILE=''
+''', str(imported), action)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("RESULT:2", result.stdout)
+                self.assertIn("memory-only", result.stderr)
+                self.assertIn("echo memory-only", result.stdout)
+                self.assertTrue(self.history.read_bytes().startswith(expected))
+                self.assertNotIn(b"memory-only", self.history.read_bytes())
+
+    def test_reload_preserves_memory_order_and_duplicate_occurrences(self):
+        self.write(b": 100:1;echo old\n: 101:1;echo old\n: 102:1;echo keep\n")
+        result = self.run_zsh('''
+HISTFILE=$1; HISTSIZE=100; SAVEHIST=100
+setopt EXTENDED_HISTORY
+fc -R "$HISTFILE"
+print -s -- fixture-active
+source "$2"
+( fc -W "$1.before" )
+histfix replace old new <<< y || exit 91
+( fc -W "$1.applied" )
+histfix undo <<< y || exit 92
+( fc -W "$1.restored" )
+[[ $HISTSIZE == 100 && $SAVEHIST == 100 ]] || exit 93
+HISTFILE=''
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        before = Path(str(self.history) + ".before").read_bytes()
+        self.assertEqual(Path(str(self.history) + ".applied").read_bytes(),
+                         before.replace(b"echo old", b"echo new"))
+        self.assertEqual(Path(str(self.history) + ".restored").read_bytes(), before)
+
+    def test_undo_refuses_ambiguous_memory_occurrences(self):
+        self.write(b": 100:1;echo old\n: 100:1;echo new\n")
+        result = self.run_zsh('''
+HISTFILE=$1; HISTSIZE=100; SAVEHIST=100
+setopt EXTENDED_HISTORY
+fc -R "$HISTFILE"
+print -s -- fixture-active
+source "$2"
+histfix replace old new <<< y || exit 91
+( fc -W "$1.applied" )
+histfix undo <<< y
+[[ $? == 2 ]] || exit 92
+( fc -W "$1.refused" )
+HISTFILE=''
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ambiguous duplicates", result.stderr)
+        self.assertEqual(Path(str(self.history) + ".applied").read_bytes(),
+                         Path(str(self.history) + ".refused").read_bytes())
+        self.assertNotIn(b"echo old", self.history.read_bytes())
+        self.assertTrue(Path(str(self.history) + ".histfix-undo.json").exists())
 
     def test_failed_flush_retains_pending_commands_for_retry(self):
         self.write(b"echo existing\n")
@@ -406,8 +478,8 @@ HISTFILE=''
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.history.read_bytes(), b"echo existing\n")
 
-    def test_interactive_prompt_replacement_and_undo_refresh_suggestions(self):
-        self.write(b": 100:1;codex --model gpt-6.1-astra\n")
+    @contextmanager
+    def interactive_zsh(self, configure):
         master, slave = pty.openpty()
         process = subprocess.Popen(
             ["zsh", "-f", "-i"], stdin=slave, stdout=slave, stderr=slave,
@@ -431,30 +503,101 @@ HISTFILE=''
 
         try:
             send(f"unsetopt zle; HISTFILE={shlex.quote(str(self.history))}; "
-                 "HISTSIZE=100; SAVEHIST=100; setopt EXTENDED_HISTORY SHARE_HISTORY; "
-                 f"fc -R \"$HISTFILE\"; source {shlex.quote(str(PLUGIN))}; PROMPT='HF''> '")
+                 "HISTSIZE=100; SAVEHIST=100; "
+                 f'fc -R "$HISTFILE"; source {shlex.quote(str(PLUGIN))}; '
+                 f"{configure}; PROMPT='HF''> '")
             until(b"HF> ")
-            send("histfix replace 'gpt-6.1-astra' 'gpt-6-astra'")
-            until(b"[y/N] ")
-            send("y")
-            self.assertIn(b"History updated.", until(b"HF> "))
-            send('print -r -- "SUGGESTION:${history[(r)codex*]}"')
-            self.assertIn(b"SUGGESTION:codex --model gpt-6-astra\r\n", until(b"HF> "))
-            send("histfix undo")
-            until(b"[y/N] ")
-            send("y")
-            self.assertIn(b"Replacement undone.", until(b"HF> "))
-            send('print -r -- "SUGGESTION:${history[(r)codex*]}"')
-            self.assertIn(b"SUGGESTION:codex --model gpt-6.1-astra\r\n", until(b"HF> "))
-            send("exit")
-            self.assertEqual(process.wait(timeout=5), 0)
-            self.assertTrue(self.history.read_bytes().startswith(
-                b": 100:1;codex --model gpt-6.1-astra\n"))
+            yield send, until, process
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait()
             os.close(master)
+
+    def test_interactive_prompt_replacement_and_undo_refresh_suggestions(self):
+        for option in ("", "INC_APPEND_HISTORY", "INC_APPEND_HISTORY_TIME"):
+            with self.subTest(option=option):
+                self.write(b": 100:1;codex --model gpt-6.1-astra\n")
+                with self.interactive_zsh(f"setopt EXTENDED_HISTORY {option}") as (send, until, process):
+                    send("histfix replace 'gpt-6.1-astra' 'gpt-6-astra'")
+                    until(b"[y/N] ")
+                    send("y")
+                    self.assertIn(b"History updated.", until(b"HF> "))
+                    send('print -r -- "SUGGESTION:${history[(r)codex*]}"')
+                    self.assertIn(b"SUGGESTION:codex --model gpt-6-astra\r\n", until(b"HF> "))
+                    send("histfix undo")
+                    until(b"[y/N] ")
+                    send("y")
+                    self.assertIn(b"Replacement undone.", until(b"HF> "))
+                    send('print -r -- "SUGGESTION:${history[(r)codex*]}"')
+                    self.assertIn(b"SUGGESTION:codex --model gpt-6.1-astra\r\n", until(b"HF> "))
+                    send("exit")
+                    self.assertEqual(process.wait(timeout=5), 0)
+                    self.assertTrue(self.history.read_bytes().startswith(
+                        b": 100:1;codex --model gpt-6.1-astra\n"))
+
+    def test_interactive_refusal_keeps_write_suppressed_events_private(self):
+        self.env["HISTFIX_TEST_IGNORE"] = "*secret*"
+        for configure in (
+            "HISTORY_IGNORE=$HISTFIX_TEST_IGNORE",
+            "zshaddhistory() { [[ $1 == $~HISTFIX_TEST_IGNORE ]] && return 2; return 0 }",
+        ):
+            with self.subTest(configure=configure):
+                self.write(b": 100:1;echo disk-old\n")
+                with self.interactive_zsh(configure) as (send, until, process):
+                    send("echo secret-one")
+                    until(b"HF> ")
+                    send("histfix replace disk-old disk-new")
+                    until(b"[y/N] ")
+                    send("y")
+                    self.assertIn(b"memory-only history", until(b"HF> "))
+                    send('print -r -- "RETAINED:${history[(r)echo s*]}"; fc -AI "$HISTFILE"')
+                    self.assertIn(b"RETAINED:echo secret-one\r\n", until(b"HF> "))
+                    data = self.history.read_bytes()
+                    self.assertIn(b"echo disk-old", data)
+                    self.assertNotIn(b"echo disk-new", data)
+                    self.assertNotIn(b"echo secret-one", data)
+                    self.assertFalse(Path(str(self.history) + ".histfix-undo.json").exists())
+                    send('HISTFILE=""; exit')
+                    self.assertEqual(process.wait(timeout=5), 0)
+
+    def test_share_history_refuses_writes_but_allows_preview_without_duplicates(self):
+        for action, expected_code in (
+            ("histfix replace old new", 2),
+            ("histfix undo", 2),
+            ("histfix replace -- old --dry-run", 2),
+            ("histfix replace --dry-run old new", 0),
+        ):
+            with self.subTest(action=action):
+                self.write(b": 100:1;echo old\n")
+                if action == "histfix undo":
+                    self.assertEqual(self.run_helper("replace", "old", "new").returncode, 10)
+                with self.interactive_zsh("setopt EXTENDED_HISTORY SHARE_HISTORY") as (send, until, process):
+                    send('cp "$HISTFILE" "$HISTFILE.before-disk"; '
+                         '( fc -W "$HISTFILE.before-memory" ); '
+                         f'{action} <<< y; histfix_exit=$?; '
+                         '( fc -W "$HISTFILE.after-memory" ); '
+                         'print -r -- "CODE:$histfix_exit OPTION:$options[sharehistory]"')
+                    output = until(b"HF> ")
+                    self.assertIn(f"CODE:{expected_code} OPTION:on\r\n".encode(), output)
+                    if expected_code:
+                        self.assertIn(b"cannot apply changes with SHARE_HISTORY", output)
+                    else:
+                        self.assertIn(b"entries would change.", output)
+                    self.assertEqual(self.history.read_bytes(),
+                                     Path(str(self.history) + ".before-disk").read_bytes())
+                    self.assertEqual(Path(str(self.history) + ".before-memory").read_bytes(),
+                                     Path(str(self.history) + ".after-memory").read_bytes())
+                    for _ in range(2):
+                        send(":")
+                        until(b"HF> ")
+                    send('fc -W "$HISTFILE.later-memory"')
+                    until(b"HF> ")
+                    later = Path(str(self.history) + ".later-memory").read_bytes()
+                    self.assertEqual(later.count(action.encode()), 1, repr(later))
+                    self.assertEqual(later.count(b"PROMPT='HF''> '"), 1, repr(later))
+                    send('HISTFILE=""; exit')
+                    self.assertEqual(process.wait(timeout=5), 0)
 
 
 if __name__ == "__main__":

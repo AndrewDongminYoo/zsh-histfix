@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+from collections import defaultdict
 from contextlib import contextmanager
 import fcntl
 import io
@@ -16,6 +17,7 @@ import tempfile
 
 APPLIED = 10
 VALIDATED = 11
+DRY_RUN_VALIDATED = 12
 CAPTURE = re.compile(r"\$(\$|&|[0-9]{1,2})")
 SELF_COMMAND = re.compile(r"^\s*(?:noglob\s+)?histfix(?:\s|$)")
 
@@ -207,6 +209,39 @@ def append_records(before, appended):
     return (terminate_records(before) if appended else before) + appended
 
 
+def prepare_memory_reload(before, after, memory, history_count):
+    original = list(records(before))
+    updated = list(records(after))
+    retained = list(records(memory))
+    if len(original) != len(updated):
+        raise ValueError("history record count changed; refusing to reload shell history")
+
+    # Preserve memory order: fc -R can import disk events after newer commands.
+    # Plain records have no timestamp; zsh assigns one when reading them.
+    available = defaultdict(list)
+    destinations = defaultdict(set)
+    for index, record in enumerate(original):
+        key = (record[1].split(b":")[1] if record[1] else None, record[2])
+        available[key].append(index)
+        destinations[key].add(updated[index][2])
+    mapping = []
+    for event in retained:
+        exact = (event[1].split(b":")[1] if event[1] else None, event[2])
+        plain = (None, event[2])
+        keys = [key for key in dict.fromkeys((exact, plain)) if available[key]]
+        if not keys:
+            raise ValueError("current shell has memory-only history; refusing to reload it")
+        if len(set().union(*(destinations[key] for key in keys))) != 1:
+            raise ValueError("current shell history has ambiguous duplicates; refusing to reload it")
+        mapping.append(available[keys[0]].pop())
+    if len(retained) != history_count + 1:
+        raise ValueError("incomplete shell history snapshot; refusing to reload it")
+    if retained[-1][2] != updated[mapping[-1]][2]:
+        raise ValueError("cannot reload a changed active history event")
+    return b"".join(encode_record(event[1], updated[index][2])
+                    for event, index in zip(retained, mapping))
+
+
 def main(argv):
     flush = len(argv) == 2 and argv[0] == "--flush"
     validate = bool(argv and argv[0] == "--validate")
@@ -214,7 +249,7 @@ def main(argv):
     if args is None and not flush:
         return 0
     if validate:
-        return VALIDATED
+        return DRY_RUN_VALIDATED if args.dry_run else VALIDATED
     filename = os.environ.get("HISTFIX_FILE")
     if not filename:
         raise ValueError("source histfix.plugin.zsh in your shell first")
@@ -262,10 +297,16 @@ def main(argv):
     if not confirm():
         print("Cancelled. No replacements applied.")
         return 0
+    memory_name = os.environ.get("HISTFIX_MEMORY")
+    memory_target = Path(memory_name) if memory_name else None
+    memory_after = prepare_memory_reload(before, after, memory_target.read_bytes(),
+                                         int(os.environ["HISTFIX_HISTORY_COUNT"])) if memory_target else None
     with history_lock(target) as stream:
         current = target.stat()
         if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino) or stream.read() != before:
             raise ValueError("history changed during preview; run histfix again")
+        if memory_target is not None:
+            atomic_write(memory_target, memory_after, 0o600)
         if args.command == "replace":
             saved = json.dumps({
                 "before": base64.b64encode(before).decode("ascii"),

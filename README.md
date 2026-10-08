@@ -86,9 +86,19 @@ An empty find string or a replacement that empties an entire command is rejected
 ## History and undo
 
 The plugin operates on `$HISTFILE` and requires positive `HISTSIZE` and `SAVEHIST` values.
+Actual replacement and undo require a shell configured without `SHARE_HISTORY`.
+With that option enabled, the plugin refuses before flushing or replacing history; `--dry-run` is still available.
+zsh's shared-history read cache cannot be refreshed by `fc -R`, so reloading edited entries can import duplicates at the next prompt.
+Use a fresh shell configured without `SHARE_HISTORY` for applying changes; toggling the option off and back on in the same shell does not reset that cache.
+
 It first exports unsaved commands with zsh's incremental history writer and appends them under a lock, including for a cancelled operation or `--dry-run`.
-It then changes only matching records, preserves the history file's permissions, and reloads the current shell's memory.
+It then changes only matching records, preserves the history file's permissions, and refreshes the current shell's existing events without changing their order or duplicate counts.
 Unchanged records are retained byte for byte, including zsh's Meta encoding.
+
+Applying or undoing a replacement requires each current in-memory event to correspond to a record in the history file.
+If older, imported, or write-suppressed events exist only in memory, the operation refuses to replace records instead of discarding those events or writing them to disk.
+Ambiguous duplicate occurrences and incomplete memory snapshots also cause a refusal.
+Preview, `--dry-run`, and cancellation remain available; the initial flush can still append ordinary pending commands.
 
 One undo record is stored beside the resolved history file as `<HISTFILE>.histfix-undo.json`, with mode `0600`.
 It contains history content and is replaced on the next successful replacement.

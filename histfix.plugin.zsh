@@ -2,6 +2,8 @@
 typeset -g _HISTFIX_HELPER="${${(%):-%x}:A:h}/histfix.py"
 
 histfix() {
+  local -i histfix_shared=0
+  [[ -o share_history ]] && histfix_shared=1
   emulate -L zsh
   setopt extended_history
   local python="${HISTFIX_PYTHON:-python3}"
@@ -9,34 +11,50 @@ histfix() {
   # Validate before any history write. Help must also work without HISTFILE.
   command "$python" "$_HISTFIX_HELPER" --validate "$@" || result=$?
   (( result == 0 )) && return 0
-  (( result == 11 )) || return $result
+  (( result == 11 || result == 12 )) || return $result
 
   if [[ ! -o interactive || -z $HISTFILE ]] || (( HISTSIZE <= 0 || SAVEHIST <= 0 )); then
     print -ru2 -- 'histfix: requires interactive zsh with HISTFILE, HISTSIZE, and SAVEHIST set'
+    return 2
+  fi
+  if (( histfix_shared && result != 12 )); then
+    print -ru2 -- 'histfix: cannot apply changes with SHARE_HISTORY enabled; use --dry-run or a fresh shell configured without SHARE_HISTORY'
     return 2
   fi
 
   # fc -AI rewrites its destination. Export in a subshell so a failed flush
   # neither rewrites existing records nor marks pending commands as saved.
   local -i SAVEHIST=2147483647
-  local pending
-  pending=$(command mktemp "${TMPDIR:-/tmp}/histfix.XXXXXXXX") || return 2
+  local histfix_tmp pending memory
+  histfix_tmp=$(command mktemp -d "${TMPDIR:-/tmp}/histfix.XXXXXXXX") || return 2
+  pending="$histfix_tmp/pending"
+  memory="$histfix_tmp/memory"
   {
     ( builtin fc -AI "$pending" ) || return 2
     HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" --flush "$pending" || return 2
     # Mark the parent's events saved only after their durable append succeeds.
     builtin fc -AI "$pending" || return 2
+    # Inspect all events, including those excluded from the real history file.
+    ( local HISTORY_IGNORE=''; builtin fc -W "$memory" ) || return 2
+    result=0
+    HISTFIX_FILE="$HISTFILE" HISTFIX_MEMORY="$memory" HISTFIX_HISTORY_COUNT="${#history}" \
+      command "$python" "$_HISTFIX_HELPER" "$@" || result=$?
+    if (( result == 10 )); then
+      local -i histfix_size=$HISTSIZE histfix_count=$(( ${#history} + 1 ))
+      {
+        HISTSIZE=0
+        # The active event survives the clear. Cap the import so that this old
+        # copy is evicted and the complete snapshot retains its original order.
+        HISTSIZE=$histfix_count
+        builtin fc -R "$memory" || return 2
+      } always {
+        HISTSIZE=$histfix_size
+      }
+      return 0
+    fi
+    return $result
   } always {
-    command rm -f -- "$pending"
+    command rm -f -- "$pending" "$memory"
+    command rmdir -- "$histfix_tmp"
   }
-  local -i histfix_size=$HISTSIZE
-  result=0
-  HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" "$@" || result=$?
-  if (( result == 10 )); then
-    HISTSIZE=0
-    HISTSIZE=$histfix_size
-    builtin fc -R "$HISTFILE" || return 2
-    return 0
-  fi
-  return $result
 }
