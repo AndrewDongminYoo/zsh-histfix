@@ -2,6 +2,7 @@
 
 import os
 import importlib.util
+import io
 from contextlib import contextmanager
 from pathlib import Path
 import pty
@@ -461,6 +462,118 @@ with open(sys.argv[1], 'r+b') as stream:
                 info = self.history.stat()
                 self.assertEqual(info.st_gid, groups[0])
                 self.assertEqual(info.st_mode & 0o777, 0o640)
+
+    def test_failed_history_write_preserves_prior_undo(self):
+        spec = importlib.util.spec_from_file_location("histfix_under_test", HELPER)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        original_write = helper.atomic_write
+        backup = Path(str(self.history) + ".histfix-undo.json")
+
+        def fail_history_write(target, data, mode, **kwargs):
+            if target == self.history.resolve():
+                raise OSError("injected history write failure")
+            original_write(target, data, mode, **kwargs)
+
+        for prior_undo in (False, True):
+            with self.subTest(prior_undo=prior_undo):
+                self.write(b"echo old\n")
+                if prior_undo:
+                    self.assertEqual(self.run_helper("replace", "old", "one").returncode, 10)
+                expected_history = self.history.read_bytes()
+                expected_undo = backup.read_bytes() if prior_undo else None
+                with mock.patch.dict(os.environ, HISTFIX_FILE=str(self.history)), \
+                        mock.patch.object(helper, "atomic_write", side_effect=fail_history_write), \
+                        mock.patch.object(helper, "confirm", return_value=True):
+                    with self.assertRaisesRegex(OSError, "injected history write failure"):
+                        helper.main(["replace", "one" if prior_undo else "old", "two"])
+                self.assertEqual(self.history.read_bytes(), expected_history)
+                if prior_undo:
+                    self.assertEqual(backup.read_bytes(), expected_undo)
+                    self.assertEqual(self.run_helper("undo").returncode, 10)
+                    self.assertEqual(self.history.read_bytes(), b"echo old\n")
+                else:
+                    self.assertFalse(backup.exists())
+
+    def test_undo_preparation_failure_does_not_mutate_history_or_backup(self):
+        spec = importlib.util.spec_from_file_location("histfix_under_test", HELPER)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        backup = Path(str(self.history) + ".histfix-undo.json")
+        for phase in ("link", "backup"):
+            with self.subTest(phase=phase):
+                self.write(b"echo old\n")
+                self.assertEqual(self.run_helper("replace", "old", "one").returncode, 10)
+                expected_history = self.history.read_bytes()
+                expected_undo = backup.read_bytes()
+                operation = (mock.patch.object(helper.os, "link", side_effect=OSError("link failure"))
+                             if phase == "link" else
+                             mock.patch.object(helper, "atomic_write", side_effect=OSError("backup failure")))
+                with operation, mock.patch.dict(os.environ, HISTFIX_FILE=str(self.history)), \
+                        mock.patch.object(helper, "confirm", return_value=True):
+                    with self.assertRaisesRegex(OSError, phase + " failure"):
+                        helper.main(["replace", "one", "two"])
+                self.assertEqual(self.history.read_bytes(), expected_history)
+                self.assertEqual(backup.read_bytes(), expected_undo)
+                self.assertEqual(list(self.home.glob(".histfix-undo-*")), [])
+
+    def test_undo_recovery_failure_retains_the_previous_inode(self):
+        spec = importlib.util.spec_from_file_location("histfix_under_test", HELPER)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        original_write = helper.atomic_write
+        original_replace = helper.os.replace
+        backup = Path(str(self.history) + ".histfix-undo.json")
+        self.write(b"echo old\n")
+        self.assertEqual(self.run_helper("replace", "old", "one").returncode, 10)
+        expected_history = self.history.read_bytes()
+        expected_undo = backup.read_bytes()
+        expected_inode = backup.stat().st_ino
+
+        def fail_history_write(target, data, mode, **kwargs):
+            if target == self.history.resolve():
+                raise OSError("history write failure")
+            original_write(target, data, mode, **kwargs)
+
+        def fail_restore(source, target):
+            if Path(source).name == "previous":
+                raise OSError("undo restore failure")
+            original_replace(source, target)
+
+        with mock.patch.dict(os.environ, HISTFIX_FILE=str(self.history)), \
+                mock.patch.object(helper, "atomic_write", side_effect=fail_history_write), \
+                mock.patch.object(helper.os, "replace", side_effect=fail_restore), \
+                mock.patch.object(helper, "confirm", return_value=True):
+            with self.assertRaisesRegex(OSError, "undo recovery failed; retained files:") as error:
+                helper.main(["replace", "one", "two"])
+        self.assertEqual(self.history.read_bytes(), expected_history)
+        recovery, = self.home.glob(".histfix-undo-*")
+        self.assertIn(str(recovery), str(error.exception))
+        self.assertEqual((recovery / "previous").read_bytes(), expected_undo)
+        self.assertEqual((recovery / "previous").stat().st_ino, expected_inode)
+
+    def test_cleanup_failure_after_commit_keeps_the_new_undo(self):
+        spec = importlib.util.spec_from_file_location("histfix_under_test", HELPER)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        original_rmdir = Path.rmdir
+        self.write(b"echo old\n")
+        self.assertEqual(self.run_helper("replace", "old", "one").returncode, 10)
+
+        def fail_cleanup(directory):
+            if directory.name.startswith(".histfix-undo-"):
+                raise OSError("cleanup failure")
+            original_rmdir(directory)
+
+        with mock.patch.dict(os.environ, HISTFIX_FILE=str(self.history)), \
+                mock.patch.object(Path, "rmdir", fail_cleanup), \
+                mock.patch.object(helper, "confirm", return_value=True), \
+                mock.patch.object(sys, "stderr", new=io.StringIO()) as error:
+            self.assertEqual(helper.main(["replace", "one", "two"]), 10)
+            self.assertIn("could not remove undo recovery directory", error.getvalue())
+        self.assertEqual(self.history.read_bytes(), b"echo two\n")
+        self.assertEqual(self.run_helper("undo").returncode, 10)
+        self.assertEqual(self.history.read_bytes(), b"echo one\n")
 
     def test_plain_history_colon_and_control_characters_round_trip(self):
         self.write(b"echo old\rkeep\n\\: old\necho old\\ \n")

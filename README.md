@@ -102,6 +102,8 @@ Preview, `--dry-run`, and cancellation remain available; the initial flush can s
 
 One undo record is stored beside the resolved history file as `<HISTFILE>.histfix-undo.json`, with mode `0600`.
 It contains history content and is replaced on the next successful replacement.
+If a filesystem write fails, the previous undo record is restored.
+If that restoration also fails, the error identifies a private recovery directory; any prior record retained there is kept for manual recovery.
 `histfix undo` restores the previous content while retaining commands appended after the replacement.
 If the original final record had no line terminator, flushing or undo adds the required record boundary before retaining appended commands.
 Undo refuses if existing records were changed, reordered, or pruned in the meantime.

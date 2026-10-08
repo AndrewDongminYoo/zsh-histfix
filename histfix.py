@@ -244,6 +244,42 @@ def prepare_memory_reload(before, after, memory, history_count):
                     for event, index in zip(retained, mapping))
 
 
+def commit_replacement(target, after, info, backup, saved):
+    """Restore the previous undo record if a filesystem write reports failure."""
+    recovery = Path(tempfile.mkdtemp(prefix=".histfix-undo-", dir=backup.parent))
+    previous = recovery / "previous"
+
+    def cleanup():
+        try:
+            previous.unlink(missing_ok=True)
+            recovery.rmdir()
+        except OSError as error:
+            print(f"histfix: could not remove undo recovery directory {recovery}: {error}",
+                  file=sys.stderr)
+
+    prepared = False
+    try:
+        if backup.exists():
+            # Keep the old inode without allocating another copy of its data.
+            os.link(backup, previous)
+        prepared = True
+        atomic_write(backup, saved, 0o600)
+        atomic_write(target, after, stat.S_IMODE(info.st_mode), gid=info.st_gid)
+    except OSError as error:
+        if prepared:
+            try:
+                if previous.exists():
+                    os.replace(previous, backup)
+                else:
+                    backup.unlink(missing_ok=True)
+            except OSError as recovery_error:
+                raise OSError(f"{error}; undo recovery failed; retained files: {recovery}") from recovery_error
+        cleanup()
+        raise
+    # Cleanup failure after commit must not roll back the now-valid undo record.
+    cleanup()
+
+
 def main(argv):
     flush = len(argv) == 2 and argv[0] == "--flush"
     validate = bool(argv and argv[0] == "--validate")
@@ -316,11 +352,11 @@ def main(argv):
                 "before": base64.b64encode(before).decode("ascii"),
                 "after": base64.b64encode(after).decode("ascii"),
             }).encode("utf-8")
-            atomic_write(backup, saved, 0o600)
-        elif backup.read_bytes() != undo_data:
-            raise ValueError("undo record changed during preview; run histfix again")
-        atomic_write(target, after, stat.S_IMODE(info.st_mode), gid=info.st_gid)
-        if args.command == "undo":
+            commit_replacement(target, after, info, backup, saved)
+        else:
+            if backup.read_bytes() != undo_data:
+                raise ValueError("undo record changed during preview; run histfix again")
+            atomic_write(target, after, stat.S_IMODE(info.st_mode), gid=info.st_gid)
             backup.unlink()
     print("History updated." if args.command == "replace" else "Replacement undone.")
     return APPLIED
