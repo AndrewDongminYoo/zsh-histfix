@@ -1,4 +1,4 @@
-# histfix
+# zsh-histfix
 
 Find and replace text in zsh history without opening the history file.
 Preview each changed entry, then confirm once to apply all replacements.
@@ -13,7 +13,7 @@ The zsh function refreshes the calling shell's history after a change.
 Clone this repository, then add this after your history configuration in `.zshrc`:
 
 ```zsh
-source /absolute/path/to/histfix/histfix.plugin.zsh
+source /absolute/path/to/zsh-histfix/histfix.plugin.zsh
 ```
 
 Set `HISTFIX_PYTHON` before sourcing if `python3` is not on your `PATH`.
