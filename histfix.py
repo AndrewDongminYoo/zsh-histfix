@@ -186,7 +186,7 @@ def history_lock(target):
     try:
         with target.open("r+b") as stream:
             fcntl.lockf(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            yield
+            yield stream
     finally:
         lock.unlink()
 
@@ -233,8 +233,8 @@ def main(argv):
         pending = Path(argv[1]).read_bytes()
         if pending:
             list(records(pending))
-            with history_lock(target):
-                atomic_write(target, append_records(target.read_bytes(), pending),
+            with history_lock(target) as stream:
+                atomic_write(target, append_records(stream.read(), pending),
                              stat.S_IMODE(info.st_mode))
         return 0
     before = target.read_bytes()
@@ -262,9 +262,9 @@ def main(argv):
     if not confirm():
         print("Cancelled. No replacements applied.")
         return 0
-    with history_lock(target):
+    with history_lock(target) as stream:
         current = target.stat()
-        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino) or target.read_bytes() != before:
+        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino) or stream.read() != before:
             raise ValueError("history changed during preview; run histfix again")
         if args.command == "replace":
             saved = json.dumps({

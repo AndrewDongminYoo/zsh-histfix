@@ -1,6 +1,7 @@
 """Exercise replacements against disposable files and a real zsh history reader."""
 
 import os
+import importlib.util
 from pathlib import Path
 import pty
 import select
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -291,6 +293,40 @@ print -rn -- "${(pj:\\0:)history}"
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertCountEqual(result.stdout.split("\0"), ["printf new\n", "printf new\n\n"])
+
+    def test_fcntl_lock_is_held_until_history_replacement(self):
+        spec = importlib.util.spec_from_file_location("histfix_under_test", HELPER)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        original_write = helper.atomic_write
+        probe = '''import fcntl, sys
+with open(sys.argv[1], 'r+b') as stream:
+    try:
+        fcntl.lockf(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(1)
+'''
+
+        checked_targets = []
+
+        def checked_write(target, data, mode):
+            if target == self.history.resolve():
+                checked_targets.append(target)
+                result = subprocess.run([sys.executable, "-c", probe, str(target)],
+                                        capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 1, "fcntl lock released before write")
+            original_write(target, data, mode)
+
+        pending = self.home / "pending"
+        pending.write_bytes(b"echo later\n")
+        for args in (("replace", "old", "new"), ("--flush", str(pending))):
+            with self.subTest(args=args):
+                self.write(b"echo old\n")
+                with mock.patch.dict(os.environ, HISTFIX_FILE=str(self.history)), \
+                        mock.patch.object(helper, "atomic_write", side_effect=checked_write), \
+                        mock.patch.object(helper, "confirm", return_value=True):
+                    helper.main(list(args))
+        self.assertEqual(len(checked_targets), 2)
 
     def test_preview_race_refuses_to_overwrite_a_new_command(self):
         self.write(b"echo old\n")
