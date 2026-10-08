@@ -117,6 +117,24 @@ class HistfixTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 10, result.stderr)
                 self.assertEqual(self.history.read_bytes(), restored + b"echo later\n")
 
+    def test_undo_recognizes_normalized_unchanged_final_record(self):
+        pending = self.home / "pending"
+        pending.write_bytes(b"echo later\n")
+        for tail, normalized in (
+            (b"echo tail", b"echo tail\n"),
+            (b"echo tail\\", b"echo tail\\ \n"),
+            (b": tail", b"\\: tail\n"),
+        ):
+            with self.subTest(tail=tail):
+                self.write(b"echo old\n" + tail)
+                self.assertEqual(self.run_helper("replace", "old", "new").returncode, 10)
+                result = self.run_helper("--flush", str(pending))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                result = self.run_helper("undo")
+                self.assertEqual(result.returncode, 10, result.stderr)
+                self.assertEqual(self.history.read_bytes(),
+                                 b"echo old\n" + normalized + b"echo later\n")
+
     def run_zsh(self, script, *args):
         # -f skips the operator's rc files. All history paths belong to this test.
         return subprocess.run(
@@ -137,6 +155,7 @@ fc -R "$HISTFILE"
 source "$2" || exit 90
 print -s -- 'echo unsaved'
 histfix replace 'gpt-6.1-astra' 'gpt-6-astra' <<< y || exit 91
+print -s -- 'reader-sentinel'
 print -r -- "MEMORY:${(j:|:)history}"
 fc -AI "$HISTFILE"
 ''')
@@ -171,6 +190,40 @@ HISTFILE=''
                 content = self.history.read_bytes()
                 self.assertTrue(content.startswith(expected), repr(content))
                 self.assertEqual(content.count(b"echo pending"), 1, repr(content))
+
+    def test_plugin_retains_memory_only_history_without_replacement(self):
+        imported = self.home / "imported"
+        imported.write_bytes(
+            b": 90:1;echo memory-only-1\n"
+            b": 91:1;echo memory-only-2\n"
+            b": 92:1;echo memory-only-3\n"
+        )
+        for action, answer in (
+            ("replace absent new", ""),
+            ("replace --dry-run old new", ""),
+            ("replace old new", "n"),
+        ):
+            with self.subTest(action=action, answer=answer):
+                self.write(b": 100:1;echo disk-old\n")
+                result = self.run_zsh('''
+HISTFILE=$1
+HISTSIZE=100
+SAVEHIST=10
+fc -R "$3"
+fc -R "$HISTFILE"
+print -s -- 'fixture-active'
+source "$2" || exit 90
+histfix ${=4} <<< "$5" || exit 91
+print -s -- 'fixture-after'
+print -r -- "MEMORY:${(j:|:)history}"
+HISTFILE=''
+''', str(imported), action, answer)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                memory = result.stdout.split("MEMORY:", 1)[1].splitlines()[0]
+                for number in (1, 2, 3):
+                    self.assertIn(f"echo memory-only-{number}", memory)
+                self.assertIn("echo disk-old", memory)
+                self.assertNotIn(b"memory-only", self.history.read_bytes())
 
     def test_failed_flush_retains_pending_commands_for_retry(self):
         self.write(b"echo existing\n")
@@ -218,6 +271,26 @@ print -rn -- "${(pj:\\0:)history}"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertCountEqual(result.stdout.split("\0"),
                               ["echo 한글 새값\nprintf 새값", "echo 새값\\", ": 새값"])
+
+    def test_zsh_reads_terminal_newlines_without_added_padding(self):
+        result = self.run_zsh('''
+HISTSIZE=100
+SAVEHIST=100
+print -s -- $'printf old\\n'
+print -s -- $'printf old\\n\\n'
+fc -W "$1"
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper("replace", "old", "new")
+        self.assertEqual(result.returncode, 10, result.stderr)
+        result = self.run_zsh('''
+HISTSIZE=100
+fc -R "$1"
+print -s -- 'reader-sentinel'
+print -rn -- "${(pj:\\0:)history}"
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertCountEqual(result.stdout.split("\0"), ["printf new\n", "printf new\n\n"])
 
     def test_preview_race_refuses_to_overwrite_a_new_command(self):
         self.write(b"echo old\n")

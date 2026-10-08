@@ -30,9 +30,6 @@ histfix() {
     command rm -f -- "$pending"
   }
   local -i histfix_size=$HISTSIZE
-  HISTSIZE=0
-  HISTSIZE=$histfix_size
-  builtin fc -R "$HISTFILE" || return 2
   result=0
   HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" "$@" || result=$?
   if (( result == 10 )); then

@@ -123,7 +123,7 @@ def encode_record(prefix, command):
     if not prefix and body.startswith(b":"):
         body = b"\\" + body
     body = body.replace(b"\n", b"\\\n")
-    if re.search(rb"\\ *$", body):
+    if re.search(rb"\\ *\Z", body):
         body += b" "
     return prefix + body + b"\n"
 
@@ -196,11 +196,15 @@ def confirm():
     return sys.stdin.readline().strip().lower() in ("y", "yes")
 
 
+def terminate_records(data):
+    if data and not data.endswith(b"\n"):
+        raw, prefix, command = list(records(data))[-1]
+        return data[:-len(raw)] + encode_record(prefix, command)
+    return data
+
+
 def append_records(before, appended):
-    if appended and before and not before.endswith(b"\n"):
-        raw, prefix, command = list(records(before))[-1]
-        before = before[:-len(raw)] + encode_record(prefix, command)
-    return before + appended
+    return (terminate_records(before) if appended else before) + appended
 
 
 def main(argv):
@@ -247,9 +251,10 @@ def main(argv):
         saved = json.loads(undo_data)
         previous = base64.b64decode(saved["before"], validate=True)
         applied = base64.b64decode(saved["after"], validate=True)
-        if not applied or not before.startswith(applied):
+        normalized = terminate_records(applied)
+        if not applied or (before != applied and not before.startswith(normalized)):
             raise ValueError("history changed since replacement; refusing to overwrite it")
-        appended = before[len(applied):]
+        appended = b"" if before == applied else before[len(normalized):]
         after = append_records(previous, appended)
         print("Undo the last replacement; keep entries appended since then.")
     if args.dry_run:
