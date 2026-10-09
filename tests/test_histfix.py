@@ -1700,43 +1700,73 @@ runpy.run_path({str(HELPER)!r}, run_name="__main__")
                     send('HISTFILE=""; exit')
                     self.assertEqual(process.wait(timeout=5), 0)
 
-    def test_share_history_refuses_writes_but_allows_preview_without_duplicates(self):
-        for action, expected_code in (
-            ("histfix replace old new", 2),
-            ("histfix undo", 2),
-            ("histfix replace -- old --dry-run", 2),
-            ("histfix replace --dry-run old new", 0),
-        ):
-            with self.subTest(action=action):
-                self.write(b": 100:1;echo old\n")
-                if action == "histfix undo":
-                    self.assertEqual(self.run_helper("replace", "old", "new").returncode, 10)
-                with self.interactive_zsh("setopt EXTENDED_HISTORY SHARE_HISTORY") as (send, until, process):
-                    send('cp "$HISTFILE" "$HISTFILE.before-disk"; '
-                         '( fc -W "$HISTFILE.before-memory" ); '
-                         f'{action} <<< y; histfix_exit=$?; '
-                         '( fc -W "$HISTFILE.after-memory" ); '
-                         'print -r -- "CODE:$histfix_exit OPTION:$options[sharehistory]"')
-                    output = until(b"HF> ")
-                    self.assertIn(f"CODE:{expected_code} OPTION:on\r\n".encode(), output)
-                    if expected_code:
-                        self.assertIn(b"cannot apply changes with SHARE_HISTORY", output)
-                    else:
-                        self.assertIn(b"entries would change.", output)
-                    self.assertEqual(self.history.read_bytes(),
-                                     Path(str(self.history) + ".before-disk").read_bytes())
-                    self.assertEqual(Path(str(self.history) + ".before-memory").read_bytes(),
-                                     Path(str(self.history) + ".after-memory").read_bytes())
-                    for _ in range(2):
-                        send(":")
+    def test_share_history_preview_keeps_disk_and_memory(self):
+        action = "histfix replace --dry-run old new"
+        self.write(b": 100:1;echo old\n")
+        with self.interactive_zsh("setopt EXTENDED_HISTORY SHARE_HISTORY") as (send, until, process):
+            send('cp "$HISTFILE" "$HISTFILE.before-disk"; '
+                 '( fc -W "$HISTFILE.before-memory" ); '
+                 f'{action} <<< y; histfix_exit=$?; '
+                 '( fc -W "$HISTFILE.after-memory" ); '
+                 'print -r -- "CODE:$histfix_exit OPTION:$options[sharehistory]"')
+            output = until(b"HF> ")
+            self.assertIn(b"CODE:0 OPTION:on\r\n", output)
+            self.assertIn(b"entries would change.", output)
+            self.assertEqual(self.history.read_bytes(),
+                             Path(str(self.history) + ".before-disk").read_bytes())
+            self.assertEqual(Path(str(self.history) + ".before-memory").read_bytes(),
+                             Path(str(self.history) + ".after-memory").read_bytes())
+            for _ in range(2):
+                send(":")
+                until(b"HF> ")
+            send('fc -W "$HISTFILE.later-memory"')
+            until(b"HF> ")
+            later = Path(str(self.history) + ".later-memory").read_bytes()
+            self.assertEqual(later.count(action.encode()), 1, repr(later))
+            self.assertEqual(later.count(b"PROMPT='HF''> '"), 1, repr(later))
+            send('HISTFILE=""; exit')
+            self.assertEqual(process.wait(timeout=5), 0)
+
+    def test_share_history_applies_and_undoes_without_duplicates(self):
+        self.write(b": 100:1;echo old\n: 101:1;echo keep\n")
+        listing = Path(str(self.history) + ".listing")
+        with self.interactive_zsh("SAVEHIST=90; setopt EXTENDED_HISTORY SHARE_HISTORY") as (
+                send, until, process):
+            def events():
+                # fc -l reads the list without writing a history file.
+                send(f"fc -ln 1 >| {shlex.quote(str(listing))}")
+                until(b"HF> ")
+                return [line.strip() for line in listing.read_text().splitlines()
+                        if not line.strip().startswith("fc -ln 1")]
+
+            def assert_unique(listed):
+                repeated = sorted({event for event in listed if listed.count(event) > 1})
+                self.assertEqual(repeated, [], listed)
+
+            for action, removed, kept in (("histfix replace old new", "echo old", "echo new"),
+                                          ("histfix undo", "echo new", "echo old")):
+                with self.subTest(action=action):
+                    send(f"{action} <<< y; "
+                         'print -r -- "CODE:$? SIZES:$HISTSIZE/$SAVEHIST OPTION:$options[sharehistory]"')
+                    self.assertIn(b"CODE:0 SIZES:100/90 OPTION:on\r\n", until(b"HF> "))
+                    for step in range(3):
+                        send(f"echo {action.split()[1]}-{step}")
                         until(b"HF> ")
-                    send('fc -W "$HISTFILE.later-memory"')
+                    listed = events()
+                    self.assertIn(kept, listed)
+                    self.assertNotIn(removed, listed)
+                    assert_unique(listed)
+                    # A later record from another writer is still imported at a prompt.
+                    with self.history.open("ab") as stream:
+                        stream.write(f": {int(time.time())}:0;echo external-{action.split()[1]}\n"
+                                     .encode())
+                    send(":")
                     until(b"HF> ")
-                    later = Path(str(self.history) + ".later-memory").read_bytes()
-                    self.assertEqual(later.count(action.encode()), 1, repr(later))
-                    self.assertEqual(later.count(b"PROMPT='HF''> '"), 1, repr(later))
-                    send('HISTFILE=""; exit')
-                    self.assertEqual(process.wait(timeout=5), 0)
+                    self.assertIn(f"echo external-{action.split()[1]}", events())
+            self.assertIn(b"echo old", self.history.read_bytes())
+            self.assertNotIn(b"echo new", self.history.read_bytes())
+            send('HISTFILE=""; exit')
+            self.assertEqual(process.wait(timeout=5), 0)
 
 
 if __name__ == "__main__":
