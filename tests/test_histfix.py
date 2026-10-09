@@ -465,6 +465,29 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
         self.assertEqual(self.history.read_bytes(),
                          b": 100:1;echo old\n: 101:2;echo untouched\n: 102:3;echo later\n")
 
+    def test_unreaped_killed_owner_recovers_flush_replace_and_undo(self):
+        self.write(b": 100:1;echo old\n: 101:2;echo untouched\n")
+        pending = self.home / "pending"
+        pending.write_bytes(b": 102:3;echo later\n")
+        lock = Path(str(self.history) + ".LOCK")
+        for args, expected in ((("--flush", str(pending)), 0),
+                               (("replace", "old", "new"), 10), (("undo",), 10)):
+            with self.subTest(args=args), self.child_history_lock() as child:
+                child.kill()
+                # Wait for actual exit without reaping: PID and zombie persist.
+                exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+                self.assertEqual(exited.si_pid, child.pid)
+                self.assertIsNone(child.returncode)
+                os.kill(child.pid, 0)
+                self.assertTrue(lock.exists())
+                result = self.run_helper(*args)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertFalse(lock.exists())
+                # Recovery must not reap the original parent's child.
+                os.kill(child.pid, 0)
+        self.assertEqual(self.history.read_bytes(),
+                         b": 100:1;echo old\n: 101:2;echo untouched\n: 102:3;echo later\n")
+
     def load_helper(self):
         spec = importlib.util.spec_from_file_location("histfix_lock_test", HELPER)
         helper = importlib.util.module_from_spec(spec)
@@ -623,7 +646,7 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
         current = helper.lock_owner()
         # A reused PID cannot be established if start identity cannot be read.
         old = dict(current, start="1:0" if sys.platform == "darwin" else "1")
-        with mock.patch.object(helper, "process_start", return_value=None):
+        with mock.patch.object(helper, "process_identity", return_value=(None, None)):
             self.assertFalse(helper.abandoned_owner(old, current))
         with mock.patch.object(helper.os, "kill", side_effect=PermissionError):
             self.assertFalse(helper.abandoned_owner(old, current))
@@ -711,6 +734,37 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
                 mock.patch.object(helper.Path, "read_text", side_effect=PermissionError):
             self.assertIsNone(helper.process_start(123))
             self.assertEqual(helper.system_identity(), (None, None))
+
+    def test_process_state_and_start_identity_share_kernel_snapshot(self):
+        helper = self.load_helper()
+        for state in ("S", "Z"):
+            fixture = f"123 (command with ) parentheses) {state} " + "0 " * 18 + "9876 0"
+            with self.subTest(platform="linux", state=state), \
+                    mock.patch.object(helper.sys, "platform", "linux"), \
+                    mock.patch.object(helper.Path, "read_text", return_value=fixture):
+                self.assertEqual(helper.process_identity(123), ("9876", state == "Z"))
+        for status in (2, 4, 5):  # SRUN, SSTOP, SZOMB in the Darwin SDK
+            libc = mock.Mock()
+
+            def probe(pid, flavor, argument, buffer, size):
+                self.assertEqual((flavor, argument), (3, 1))
+                values = [0] * 12 + [b"" , b""] + [0] * 6 + [100, 1]
+                values[1], values[3] = status, pid
+                buffer.raw = helper.struct.pack("=12I16s32s6I2Q", *values)
+                return size
+
+            libc.proc_pidinfo.side_effect = probe
+            with self.subTest(platform="darwin", status=status), \
+                    mock.patch.object(helper.sys, "platform", "darwin"), \
+                    mock.patch.object(helper.ctypes, "CDLL", return_value=libc):
+                self.assertEqual(helper.process_identity(123), ("100:1", status == 5))
+        current = helper.lock_owner()
+        with mock.patch.object(helper, "process_identity", return_value=(None, True)):
+            self.assertFalse(helper.abandoned_owner(current, current))
+        with mock.patch.object(helper, "process_identity", return_value=(current["start"], False)):
+            self.assertFalse(helper.abandoned_owner(current, current))
+        with mock.patch.object(helper, "process_identity", return_value=(current["start"], True)):
+            self.assertTrue(helper.abandoned_owner(current, current))
 
     def test_macos_identity_uses_native_apis_with_bounded_readonly_probes(self):
         helper = self.load_helper()

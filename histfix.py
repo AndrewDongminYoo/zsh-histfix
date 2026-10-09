@@ -181,13 +181,13 @@ def atomic_write(target, data, mode, *, gid=None):
             os.unlink(name)
 
 
-def process_start(pid):
-    """Return a kernel start identity, never a rounded ps timestamp."""
+def process_identity(pid):
+    """Read start identity and zombie state in the same kernel snapshot."""
     try:
         if sys.platform == "linux":
             # comm can contain spaces and ')'; fields after its final ')' start at 3.
             fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-            return fields[19]  # field 22: start ticks since boot
+            return fields[19], fields[0] == "Z"  # field 22: start ticks since boot
         if sys.platform == "darwin":
             # proc_bsdinfo from the macOS SDK, PROC_PIDTBSDINFO = 3.
             layout = "=12I16s32s6I2Q"
@@ -197,13 +197,18 @@ def process_start(pid):
             probe.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
                               ctypes.c_void_p, ctypes.c_int]
             probe.restype = ctypes.c_int
-            if probe(pid, 3, 0, buffer, size) == size:
+            # A nonzero argument includes unreaped zombies in PROC_PIDTBSDINFO.
+            if probe(pid, 3, 1, buffer, size) == size:
                 values = struct.unpack(layout, buffer.raw)
                 if values[3] == pid and values[-2] > 0:
-                    return f"{values[-2]}:{values[-1]}"
+                    return f"{values[-2]}:{values[-1]}", values[1] == 5  # SZOMB from sys/proc.h
     except (OSError, ValueError, IndexError):
         pass
-    return None
+    return None, None
+
+
+def process_start(pid):
+    return process_identity(pid)[0]
 
 
 def system_identity():
@@ -285,8 +290,9 @@ def abandoned_owner(owner, current):
         return True
     except OSError:
         return False  # Includes permission-denied process probes.
-    start = process_start(owner["pid"])
-    return start is not None and start != owner["start"]  # PID reuse
+    start, zombie = process_identity(owner["pid"])
+    # A zombie has exited and released its descriptors, although kill(pid, 0) succeeds.
+    return start is not None and (start != owner["start"] or zombie is True)
 
 
 def same_inode(path, info):
