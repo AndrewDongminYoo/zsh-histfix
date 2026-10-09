@@ -43,17 +43,19 @@ A clone in a directory named `zsh-histfix` is reported as `plugin 'zsh-histfix' 
 
 Oh My Zsh enables `SHARE_HISTORY` in its `lib/history.zsh`.
 With that option enabled, histfix previews with `--dry-run` but refuses replacement and undo, as described in [History and undo](#history-and-undo).
-To apply changes, add `histfix` to `plugins` and disable the option after Oh My Zsh loads:
+To apply changes, add `histfix` to `plugins`, disable the option after Oh My Zsh loads, and keep incremental writes:
 
 ```zsh
 plugins=(git histfix)
 source "$ZSH/oh-my-zsh.sh"
 unsetopt share_history
+setopt inc_append_history
 ```
 
 Then open a new shell.
-Without `SHARE_HISTORY`, open shells no longer import each other's commands at each prompt.
-New shells still read the saved history file.
+`SHARE_HISTORY` also wrote each command to the history file as it was entered.
+Without `INC_APPEND_HISTORY`, zsh writes the session's commands only when the shell exits, so a killed terminal loses them.
+Open shells no longer import each other's commands at each prompt, and new shells still read the saved history file.
 
 ## Usage
 
