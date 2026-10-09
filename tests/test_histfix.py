@@ -1500,6 +1500,45 @@ HISTFILE=''
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.history.read_bytes(), b"echo existing\n")
 
+    def test_empty_shell_history_previews_and_refuses_writes(self):
+        # Without fc -R, a -c command leaves the history list empty, and fc -AI
+        # then writes no export file.
+        self.write(b"echo old\n")
+        result = self.run_zsh('''
+HISTFILE=$1
+HISTSIZE=100
+SAVEHIST=100
+source "$2" || exit 90
+histfix replace --dry-run old new || exit 91
+histfix replace old new <<< y
+[[ $? == 2 ]] || exit 92
+histfix undo <<< y
+[[ $? == 2 ]] || exit 93
+HISTFILE=''
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("1 entries would change."), 1, result.stdout)
+        self.assertNotIn("Errno", result.stderr)
+        self.assertEqual(result.stderr.count("no history events"), 2, result.stderr)
+        self.assertEqual(self.history.read_bytes(), b"echo old\n")
+        self.assertEqual([path.name for path in self.home.iterdir()
+                          if path.name.startswith("history")], ["history"])
+
+        # As with pending commands, the flush creates a missing history file.
+        self.history.unlink()
+        result = self.run_zsh('''
+HISTFILE=$1
+HISTSIZE=100
+SAVEHIST=100
+source "$2" || exit 90
+histfix replace --dry-run old new || exit 91
+HISTFILE=''
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("0 entries would change.", result.stdout)
+        self.assertEqual(self.history.read_bytes(), b"")
+        self.assertEqual(self.history.stat().st_mode & 0o777, 0o600)
+
     def test_completion_registers_before_or_after_compinit_without_running_it(self):
         # A copy without _histfix matches a package that installs only the plugin.
         bare = self.home / "bare"
