@@ -360,13 +360,25 @@ def recover_history_lock(lock, current):
 
 
 @contextmanager
+def private_lock_creation():
+    # Only this single-threaded helper's creation syscalls use the private mask.
+    # Existing paths are never chmodded; callers retain their original umask.
+    previous = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+@contextmanager
 def history_lock(target):
     # A persistent inode serializes inspection, recovery, and the whole write.
     # Never unlink this guard: waiters could otherwise lock different inodes.
     guard = Path(str(target) + ".histfix-lock")
     lock = Path(str(target) + ".LOCK")
     busy = "history is locked by another process; try again (see README for manual recovery)"
-    fd = os.open(guard, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with private_lock_creation():
+        fd = os.open(guard, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     with os.fdopen(fd, "r+b") as guard_stream:
         info = os.fstat(guard_stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
@@ -381,12 +393,14 @@ def history_lock(target):
         owner = lock_owner()
         data = json.dumps(owner).encode("ascii")
         try:
-            lock.mkdir(mode=0o700)
+            with private_lock_creation():
+                lock.mkdir(mode=0o700)
         except FileExistsError as error:
             if not recover_history_lock(lock, owner):
                 raise ValueError(busy) from error
             try:
-                lock.mkdir(mode=0o700)
+                with private_lock_creation():
+                    lock.mkdir(mode=0o700)
             except FileExistsError as race:
                 raise ValueError(busy) from race
         acquired = lock.lstat()

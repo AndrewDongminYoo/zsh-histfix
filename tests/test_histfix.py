@@ -419,17 +419,19 @@ with open(sys.argv[1], 'r+b') as stream:
         self.assertEqual(self.history.read_bytes(), b"echo old\necho concurrent\n")
 
     @contextmanager
-    def child_history_lock(self):
-        code = """import importlib.util, pathlib, sys
+    def child_history_lock(self, mask=None):
+        code = """import importlib.util, os, pathlib, sys
 spec = importlib.util.spec_from_file_location('helper', sys.argv[1])
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
+if sys.argv[3] != 'None':
+    os.umask(int(sys.argv[3]))
 with helper.history_lock(pathlib.Path(sys.argv[2])):
     print('ACQUIRED', flush=True)
     sys.stdin.readline()
 """
         with subprocess.Popen(
-            [sys.executable, "-c", code, str(HELPER), str(self.history)],
+            [sys.executable, "-c", code, str(HELPER), str(self.history), str(mask)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=dict(self.env, HOME=str(self.home), ZDOTDIR=str(self.home)),
         ) as child:
@@ -537,6 +539,84 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
         self.assertEqual(result.returncode, 10, result.stderr)
         self.assertFalse(lock.exists())
         self.assertEqual(self.history.read_bytes(), b"echo new\n")
+
+    def test_owner_masking_umask_keeps_new_lock_artifacts_usable(self):
+        self.write(b"echo old\n")
+        code = """import importlib.util, os, pathlib, sys
+spec = importlib.util.spec_from_file_location('helper', sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+target = pathlib.Path(sys.argv[2])
+mask = int(sys.argv[3], 8)
+os.umask(mask)
+for _ in range(2):
+    with helper.history_lock(target):
+        lock = pathlib.Path(str(target) + '.LOCK')
+        guard = pathlib.Path(str(target) + '.histfix-lock')
+        assert guard.stat().st_mode & 0o777 == 0o600
+        assert lock.stat().st_mode & 0o777 == 0o700
+        assert (lock / 'owner.json').stat().st_mode & 0o777 == 0o600
+        assert os.umask(mask) == mask
+    assert os.umask(mask) == mask
+"""
+        guard = Path(str(self.history) + ".histfix-lock")
+        for mask in ("277", "777"):
+            with self.subTest(mask=mask):
+                if guard.exists():
+                    guard.unlink()
+                result = subprocess.run([sys.executable, "-c", code, str(HELPER),
+                                         str(self.history), mask],
+                                        text=True, capture_output=True, env=self.env, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.history.read_bytes(), b"echo old\n")
+
+    def test_masked_owner_kill_recovers_with_masked_reacquisition(self):
+        self.write(b"echo old\n")
+        pending = self.home / "pending"
+        pending.write_bytes(b"echo later\n")
+        with self.child_history_lock(mask=0o777) as child:
+            child.kill()
+            child.wait(timeout=10)
+        code = """import os, runpy, sys
+os.umask(0o777)
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name='__main__')
+"""
+        for _ in range(2):
+            result = subprocess.run([sys.executable, "-c", code, str(HELPER),
+                                     "--flush", str(pending)],
+                                    text=True, capture_output=True, env=self.env, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(Path(str(self.history) + ".LOCK").exists())
+        self.assertEqual(self.history.read_bytes(), b"echo old\necho later\necho later\n")
+        self.assertEqual(Path(str(self.history) + ".histfix-lock").stat().st_mode & 0o777, 0o600)
+
+    def test_creation_failures_restore_umask_without_chmodding_existing_guard(self):
+        helper = self.load_helper()
+        self.write(b"echo old\n")
+        guard = Path(str(self.history) + ".histfix-lock")
+        previous = os.umask(0o777)
+        try:
+            with mock.patch.object(helper.os, "open", side_effect=PermissionError):
+                with self.assertRaises(PermissionError):
+                    with helper.history_lock(self.history):
+                        self.fail("entered after guard creation failure")
+            self.assertEqual(os.umask(0o777), 0o777)
+            with mock.patch.object(helper.Path, "mkdir", side_effect=PermissionError):
+                with self.assertRaises(PermissionError):
+                    with helper.history_lock(self.history):
+                        self.fail("entered after directory creation failure")
+            self.assertEqual(os.umask(0o777), 0o777)
+            guard.chmod(0o400)
+            before = guard.stat()
+            with self.assertRaises(PermissionError):
+                with helper.history_lock(self.history):
+                    self.fail("entered with existing read-only guard")
+            self.assertEqual((guard.stat().st_ino, guard.stat().st_mode),
+                             (before.st_ino, before.st_mode))
+            self.assertEqual(os.umask(0o777), 0o777)
+        finally:
+            os.umask(previous)
 
     def test_normal_lock_publishes_owner_and_keeps_guard_inode(self):
         self.write(b"echo old\n")
