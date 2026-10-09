@@ -1793,6 +1793,29 @@ runpy.run_path({str(HELPER)!r}, run_name="__main__")
         self.assertNotIn(b"echo token-old", commands)
         self.assertEqual(len(commands), len(set(commands)), saved)
 
+    def test_share_history_skips_reload_when_lock_directory_remains(self):
+        # The helper keeps a committed change when it cannot remove .LOCK. fc -p
+        # would then wait for that directory forever, so the plugin must not call it.
+        self.write(b": 100:1;echo token-old\n")
+        wrapper = self.home / "python-leaving-lock"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            f'{shlex.quote(sys.executable)} "$@"\n'
+            "status=$?\n"
+            '[ "$status" -eq 10 ] && mkdir -m 700 "$HISTFIX_FILE.LOCK"\n'
+            'exit "$status"\n')
+        wrapper.chmod(0o755)
+        with self.interactive_zsh(f"HISTFIX_PYTHON={shlex.quote(str(wrapper))}; "
+                                  "setopt EXTENDED_HISTORY SHARE_HISTORY") as (send, until, process):
+            send('histfix replace token-old token-new <<< y; print -r -- "CODE:$?"')
+            output = until(b"HF> ")
+            self.assertIn(b"CODE:0\r\n", output)
+            self.assertIn(b"did not reload", output)
+            send('HISTFILE=""; exit')
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.assertIn(b"echo token-new", self.history.read_bytes())
+        Path(str(self.history) + ".LOCK").rmdir()
+
     def test_validate_treats_options_after_double_dash_as_text(self):
         # The plugin refuses writes without history events unless validation says dry run.
         self.assertEqual(self.run_helper("--validate", "replace", "--", "old", "--dry-run").returncode, 11)

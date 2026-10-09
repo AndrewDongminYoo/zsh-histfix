@@ -52,6 +52,12 @@ histfix() {
       # starts that position at its end, which avoids duplicate imports.
       HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" "$@" || result=$?
       (( result == 10 )) || return $result
+      # fc -p locks HISTFILE before reading it, and zsh waits forever on a
+      # directory lock. The helper already reported a retained histfix lock.
+      if [[ -d $HISTFILE.LOCK ]]; then
+        print -ru2 -- "histfix: did not reload this shell's history while $HISTFILE.LOCK remains; recover the lock, then open a new shell"
+        return 0
+      fi
       # fc -P later restores the values current at fc -p, so undo the
       # flush-only SAVEHIST override first.
       SAVEHIST=$histfix_savehist

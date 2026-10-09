@@ -102,6 +102,7 @@ Preview, `--dry-run`, and cancellation remain available; the initial flush can s
 With `SHARE_HISTORY`, the shell imports other shells' commands at every prompt, so its events cannot be matched to a snapshot.
 zsh also keeps a shared-history read position that `fc -R` cannot reset, which would import every record again at the next prompt.
 After a successful replacement or undo, the plugin therefore starts a new history level with `fc -p`, which reads the rewritten history file and resets that position.
+If the helper could not remove `<HISTFILE>.LOCK` after the change, the plugin skips this reload and reports it, because `fc -p` would wait for that directory indefinitely.
 The current shell then shows the history file's records in file order.
 Events that existed only in memory, such as commands excluded by `HIST_IGNORE_SPACE` or a `zshaddhistory` hook, are no longer listed.
 They are not written to disk.
