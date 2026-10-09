@@ -721,6 +721,47 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                 self.assertEqual(self.history.read_bytes(), b"echo new\n")
                 self.write(b"echo old\n")
 
+    def test_previous_boot_recovers_recreated_linux_namespace_but_preserves_ambiguity(self):
+        helper = self.load_helper()
+        self.write(b"echo old\n")
+        with mock.patch.object(helper.sys, "platform", "linux"), \
+                mock.patch.object(helper, "system_identity", return_value=(
+                    "a" * 32, "00000000-0000-0000-0000-000000000002")), \
+                mock.patch.object(helper.os, "readlink", return_value="pid:[4026532000]"), \
+                mock.patch.object(helper, "process_identity", return_value=("100", False)), \
+                mock.patch.object(helper.os, "kill", side_effect=AssertionError("ambiguous PID probe")):
+            current = helper.lock_owner()
+            previous = "00000000-0000-0000-0000-000000000001"
+            cases = ((dict(boot=previous, namespace="pid:[4026531999]"), True),
+                     (dict(namespace="pid:[4026531999]"), False),
+                     (dict(boot=previous, host="b" * 32), False),
+                     (dict(boot=previous, namespace="unknown"), False))
+            for changes, expected in cases:
+                with self.subTest(changes=changes):
+                    owner = dict(current, **changes)
+                    lock, metadata = self.write_owner_lock(owner)
+                    before = metadata.read_bytes()
+                    try:
+                        self.assertEqual(helper.abandoned_owner(owner, current), expected)
+                        if expected:
+                            with helper.history_lock(self.history):
+                                recovered = json.loads(metadata.read_bytes())
+                                self.assertEqual(recovered["boot"], current["boot"])
+                                self.assertEqual(recovered["namespace"], current["namespace"])
+                            self.assertFalse(lock.exists())
+                        else:
+                            with self.assertRaisesRegex(ValueError, "locked"):
+                                with helper.history_lock(self.history):
+                                    self.fail("entered with ambiguous owner")
+                            self.assertEqual(metadata.read_bytes(), before)
+                    finally:
+                        if lock.exists():
+                            metadata.unlink()
+                            lock.rmdir()
+            self.assertFalse(helper.abandoned_owner(
+                dict(current, boot=previous), dict(current, namespace="unknown")))
+        self.assertEqual(self.history.read_bytes(), b"echo old\n")
+
     def test_unavailable_identity_and_permission_probes_refuse_recovery(self):
         helper = self.load_helper()
         current = helper.lock_owner()

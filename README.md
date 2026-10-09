@@ -120,9 +120,12 @@ New histfix locks are private `<HISTFILE>.LOCK` directories (mode `0700`) with
 an atomically written `owner.json` (mode `0600`). The versioned owner record
 contains the user ID, machine ID, boot ID, PID, kernel process start identity,
 and a unique acquisition token. On Linux it also identifies the PID namespace.
-A later invocation can recover a recognized lock from this machine and namespace
-when the owner has exited, the PID belongs to a different process, or the machine
-has rebooted. Lock age alone never establishes abandonment.
+A later invocation can recover a recognized lock from this machine when the owner
+has exited, the PID belongs to a different process, or the machine has rebooted.
+Within the same boot, process probes require the original PID namespace. After a
+confirmed reboot of the same machine, old namespaces cannot contain live owners;
+recovery also permits a recreated Linux namespace with a different inode.
+Lock age alone never establishes abandonment.
 macOS uses the platform UUID, boot session UUID, and `proc_pidinfo` start time;
 Linux uses the machine ID, boot ID, and `/proc` process start ticks.
 If those identities or process probes are unavailable, recovery is refused.
@@ -140,8 +143,8 @@ histfix's exclusive `mkdir`, histfix refuses and preserves the zsh lock.
 The helper continues to respect zsh's `HIST_FCNTL_LOCK` advisory lock.
 
 Active owners, zsh symlink/regular/hard-link locks, all regular-file histfix locks,
-legacy empty locks, unknown formats, extra directory entries, foreign hosts or
-namespaces, and ambiguous process identities are preserved. JSON regular-file
+legacy empty locks, unknown formats, extra directory entries, foreign hosts,
+other namespaces within the same boot, and ambiguous process identities are preserved. JSON regular-file
 locks from an earlier development version are also manual-recovery cases.
 A crash before owner publication or between owner removal and directory removal
 can leave an incomplete directory, which is preserved for manual recovery.

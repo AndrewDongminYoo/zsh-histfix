@@ -275,15 +275,21 @@ def abandoned_owner(owner, current):
     for key in ("host", "boot", "namespace", "start", "token"):
         if not isinstance(owner[key], str) or not owner[key] or not current[key]:
             return False
+    namespace_pattern = r"pid:\[[1-9][0-9]*\]" if sys.platform == "linux" else r"host"
+    if (not isinstance(current["namespace"], str)
+            or not re.fullmatch(namespace_pattern, owner["namespace"])
+            or not re.fullmatch(namespace_pattern, current["namespace"])):
+        return False
     if (not re.fullmatch(r"[0-9a-f]{32}", owner["token"])
             or not re.fullmatch(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", owner["boot"])
             or not re.fullmatch(r"[1-9][0-9]*:[0-9]{1,6}" if sys.platform == "darwin" else r"[0-9]+",
                                 owner["start"])
-            or owner["host"] != current["host"]
-            or owner["namespace"] != current["namespace"]):
+            or owner["host"] != current["host"]):
         return False
     if owner["boot"] != current["boot"]:
-        return True  # The same machine has rebooted since acquisition.
+        return True  # Same machine rebooted; its old PID namespaces cannot have live owners.
+    if owner["namespace"] != current["namespace"]:
+        return False  # Within one boot, a PID is meaningful only in its original namespace.
     try:
         os.kill(owner["pid"], 0)
     except ProcessLookupError:
