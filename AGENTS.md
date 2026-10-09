@@ -8,7 +8,8 @@ Homebrew packaging is maintained in `AndrewDongminYoo/homebrew-tap`.
 
 ## Files
 
-- `histfix.plugin.zsh`: argument validation, incremental history flush, and current-shell reload.
+- `histfix.plugin.zsh`: argument validation, incremental history flush, current-shell reload, and completion registration.
+- `_histfix`: zsh completion for commands and options.
 - `histfix.py`: literal and regex replacements, zsh history encoding, preview, atomic writes, and undo.
 - `tests/test_histfix.py`: isolated file, zsh, and pseudoterminal regression tests.
 - `docs/specs/` and `docs/plans/`: behavior contracts and implementation plans.

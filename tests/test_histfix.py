@@ -1500,6 +1500,87 @@ HISTFILE=''
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.history.read_bytes(), b"echo existing\n")
 
+    def test_completion_registers_before_or_after_compinit_without_running_it(self):
+        # A copy without _histfix matches a package that installs only the plugin.
+        bare = self.home / "bare"
+        bare.mkdir()
+        for name in ("histfix.plugin.zsh", "histfix.py"):
+            (bare / name).write_bytes((ROOT / name).read_bytes())
+        cases = {
+            "compinit before source": '''
+autoload -Uz compinit && compinit -u -D || exit 90
+source "$2" || exit 91
+[[ $_comps[histfix] == _histfix ]] || exit 92
+''',
+            "compinit after source": '''
+source "$2" || exit 91
+[[ $fpath[1] == ${2:h} ]] || exit 92
+autoload -Uz compinit && compinit -u -D || exit 90
+[[ $_comps[histfix] == _histfix ]] || exit 93
+''',
+            "no compinit": '''
+source "$2" || exit 91
+(( ! $+functions[compdef] && ! $+_comps )) || exit 92
+''',
+            "no completion file": '''
+autoload -Uz compinit && compinit -u -D || exit 90
+saved=($fpath)
+source "$3/histfix.plugin.zsh" || exit 91
+(( ! $+_comps[histfix] )) || exit 92
+[[ "$fpath" == "$saved" ]] || exit 93
+''',
+        }
+        for name, script in cases.items():
+            with self.subTest(name):
+                result = self.run_zsh(script, str(bare))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+
+    def test_completion_completes_commands_and_options_at_a_prompt(self):
+        master, slave = pty.openpty()
+        process = subprocess.Popen(
+            ["zsh", "-f", "-i"], stdin=slave, stdout=slave, stderr=slave,
+            start_new_session=True,
+            env=dict(self.env, HOME=str(self.home), ZDOTDIR=str(self.home), TERM="dumb"),
+        )
+        os.close(slave)
+        output = b""
+
+        def until(marker):
+            nonlocal output
+            deadline = time.monotonic() + 10
+            while marker not in output:
+                if time.monotonic() >= deadline:
+                    self.fail(f"zsh did not emit {marker!r}: {output!r}")
+                if select.select([master], [], [], 0.1)[0]:
+                    output += os.read(master, 65536)
+
+        try:
+            # Ctrl-B runs the edited line as a print of the buffer between angle
+            # brackets, so the marker appears only after completion has finished.
+            os.write(master, (
+                f"autoload -Uz compinit; compinit -u -D; source {shlex.quote(str(PLUGIN))}; "
+                "histfix-test-show() { BUFFER=\"print -r -- '<'${(q)BUFFER}'>'\"; "
+                "zle accept-line }; zle -N histfix-test-show; "
+                "bindkey '^B' histfix-test-show; PROMPT='HF''> '\n").encode())
+            until(b"HF> ")
+            for typed, completed in (
+                ("histfix rep", "histfix replace "),
+                ("histfix replace --ig", "histfix replace --ignore-case "),
+                ("histfix undo --dr", "histfix undo --dry-run "),
+                ("histfix replace --regex fo", "histfix replace --regex fo"),
+                ("histfix replace -- --x", "histfix replace -- --x"),
+            ):
+                with self.subTest(typed):
+                    output = b""
+                    os.write(master, typed.encode() + b"\t\x02")
+                    until(f"<{completed}>".encode())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            os.close(master)
+
     @contextmanager
     def interactive_zsh(self, configure):
         master, slave = pty.openpty()
