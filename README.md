@@ -19,6 +19,8 @@ source /absolute/path/to/zsh-histfix/histfix.plugin.zsh
 Set `HISTFIX_PYTHON` before sourcing if `python3` is not on your `PATH`.
 The plugin can coexist with Oh My Zsh and `zsh-autosuggestions`.
 It does not change key bindings or shell options persistently.
+It adds its own directory to `fpath` and registers completion for commands and options, but it never runs `compinit`.
+Completion works whether you source the plugin before or after `compinit`.
 
 The [Homebrew tap](https://github.com/AndrewDongminYoo/homebrew-tap) provides a HEAD-only development formula:
 
