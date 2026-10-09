@@ -88,19 +88,23 @@ An empty find string or a replacement that empties an entire command is rejected
 ## History and undo
 
 The plugin operates on `$HISTFILE` and requires positive `HISTSIZE` and `SAVEHIST` values.
-Actual replacement and undo require a shell configured without `SHARE_HISTORY`.
-With that option enabled, the plugin refuses before flushing or replacing history; `--dry-run` is still available.
-zsh's shared-history read cache cannot be refreshed by `fc -R`, so reloading edited entries can import duplicates at the next prompt.
-Use a fresh shell configured without `SHARE_HISTORY` for applying changes; toggling the option off and back on in the same shell does not reset that cache.
+Replacement and undo work with and without `SHARE_HISTORY`, but the current shell is refreshed differently.
 
 It first exports unsaved commands with zsh's incremental history writer and appends them under a lock, including for a cancelled operation or `--dry-run`.
 It then changes only matching records, preserves the history file's permissions, and refreshes the current shell's existing events without changing their order or duplicate counts.
 Unchanged records are retained byte for byte, including zsh's Meta encoding.
 
-Applying or undoing a replacement requires each current in-memory event to correspond to a record in the history file.
+Without `SHARE_HISTORY`, applying or undoing a replacement requires each current in-memory event to correspond to a record in the history file.
 If older, imported, or write-suppressed events exist only in memory, the operation refuses to replace records instead of discarding those events or writing them to disk.
 Ambiguous duplicate occurrences and incomplete memory snapshots also cause a refusal.
 Preview, `--dry-run`, and cancellation remain available; the initial flush can still append ordinary pending commands.
+
+With `SHARE_HISTORY`, the shell imports other shells' commands at every prompt, so its events cannot be matched to a snapshot.
+zsh also keeps a shared-history read position that `fc -R` cannot reset, which would import every record again at the next prompt.
+After a successful replacement or undo, the plugin therefore starts a new history level with `fc -p`, which reads the rewritten history file and resets that position.
+The current shell then shows the history file's records in file order.
+Events that existed only in memory, such as commands excluded by `HIST_IGNORE_SPACE` or a `zshaddhistory` hook, are no longer listed.
+They are not written to disk.
 
 One undo record is stored beside the resolved history file as `<HISTFILE>.histfix-undo.json`, with mode `0600`.
 It contains history content and is replaced on the next successful replacement.
@@ -115,6 +119,19 @@ Close other shells using the same history file before applying replacements.
 The tool checks for changes made during preview and takes zsh-compatible history locks during the write, but it cannot refresh another shell's in-memory history.
 Another open shell can later save stale commands back to disk.
 Do not use another history-rewriting tool concurrently.
+
+### Removing sensitive text
+
+A replacement changes the history file, but copies of the old text can remain elsewhere:
+
+- Other open shells keep the old commands in memory, also with `SHARE_HISTORY`. They show them in their history and can write them back with `fc -W`.
+- With `SHARE_HISTORY`, the current shell keeps its previous history level until it exits. `fc -P` restores that level, including the old commands.
+- `<HISTFILE>.histfix-undo.json` contains the complete history from before the last replacement until the next replacement or a successful undo. Delete it if you do not need to undo.
+- If a histfix process is killed, its private temporary directory under `$TMPDIR` or a `.<history file name>.*` temporary file beside the history file can keep a copy of the history.
+- Backups and synchronized copies of the history file are not changed.
+
+To remove a secret, close other shells that use the history file, then delete the undo record after you check the result.
+Rotate a leaked credential: removing it from history does not revoke it.
 
 ## Abandoned history locks
 
