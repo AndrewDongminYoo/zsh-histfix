@@ -712,6 +712,73 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
             self.assertIsNone(helper.process_start(123))
             self.assertEqual(helper.system_identity(), (None, None))
 
+    def test_macos_identity_uses_native_apis_with_bounded_readonly_probes(self):
+        helper = self.load_helper()
+        libc = mock.Mock()
+
+        def get_host(buffer, wait):
+            self.assertEqual((wait._obj.seconds, wait._obj.nanoseconds), (5, 0))
+            buffer.raw = bytes.fromhex("11" * 16)
+            return 0
+
+        def get_boot(name, buffer, length, new_value, new_length):
+            self.assertEqual(name, b"kern.bootsessionuuid")
+            self.assertEqual(length._obj.value, 37)
+            self.assertIsNone(new_value)
+            self.assertEqual(new_length, 0)
+            buffer.raw = b"00000000-0000-0000-0000-000000000001\0"
+            return 0
+
+        libc.gethostuuid.side_effect = get_host
+        libc.sysctlbyname.side_effect = get_boot
+        with mock.patch.object(helper.sys, "platform", "darwin"), \
+                mock.patch.object(helper.ctypes, "CDLL", return_value=libc), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("external command")):
+            self.assertEqual(helper.system_identity(),
+                             ("11111111-1111-1111-1111-111111111111",
+                              "00000000-0000-0000-0000-000000000001"))
+
+    def test_macos_native_identity_failures_disable_recovery(self):
+        helper = self.load_helper()
+        for failure in ("host-error", "empty-host", "boot-error", "short", "non-ascii", "no-nul"):
+            with self.subTest(failure=failure):
+                libc = mock.Mock()
+
+                def get_host(buffer, wait):
+                    if failure != "empty-host":
+                        buffer.raw = bytes.fromhex("11" * 16)
+                    return -1 if failure == "host-error" else 0
+
+                def get_boot(name, buffer, length, new_value, new_length):
+                    buffer.raw = b"00000000-0000-0000-0000-000000000001\0"
+                    if failure == "short":
+                        length._obj.value = 36
+                    elif failure == "non-ascii":
+                        buffer.raw = b"\xff" * 36 + b"\0"
+                    elif failure == "no-nul":
+                        buffer.raw = b"a" * 37
+                    return -1 if failure == "boot-error" else 0
+
+                libc.gethostuuid.side_effect = get_host
+                libc.sysctlbyname.side_effect = get_boot
+                with mock.patch.object(helper.sys, "platform", "darwin"), \
+                        mock.patch.object(helper.ctypes, "CDLL", return_value=libc):
+                    self.assertEqual(helper.system_identity(), (None, None))
+        with mock.patch.object(helper.sys, "platform", "darwin"), \
+                mock.patch.object(helper.ctypes, "CDLL", side_effect=OSError):
+            self.assertEqual(helper.system_identity(), (None, None))
+        with mock.patch.object(helper.sys, "platform", "darwin"), \
+                mock.patch.object(helper.ctypes, "CDLL", return_value=object()):
+            self.assertEqual(helper.system_identity(), (None, None))
+
+    @unittest.skipUnless(sys.platform == "darwin", "native macOS identity")
+    def test_native_macos_identity_never_starts_external_commands(self):
+        helper = self.load_helper()
+        with mock.patch.object(subprocess, "Popen", side_effect=AssertionError("external command")):
+            first = helper.system_identity()
+            self.assertTrue(all(first), "native machine and boot identity unavailable")
+            self.assertEqual(helper.system_identity(), first)
+
     def test_unrecognized_recovery_guards_are_preserved(self):
         self.write(b"echo old\n")
         guard = Path(str(self.history) + ".histfix-lock")

@@ -13,7 +13,6 @@ from pathlib import Path
 import re
 import stat
 import struct
-import subprocess
 import sys
 import tempfile
 import uuid
@@ -214,15 +213,30 @@ def system_identity():
             host = Path("/etc/machine-id").read_text().strip()
             boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         elif sys.platform == "darwin":
-            host_output = subprocess.check_output(
-                ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-                text=True, timeout=5, stderr=subprocess.DEVNULL,
-            )
-            host = re.search(r'"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]+)"', host_output)[1]
-            boot = subprocess.check_output(
-                ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
-                text=True, timeout=5, stderr=subprocess.DEVNULL,
-            ).strip()
+            # Darwin SDK: gethostuuid(uuid_t, const struct timespec *).
+            # A bounded wait avoids hanging when the platform UUID is unavailable.
+            class Timespec(ctypes.Structure):
+                _fields_ = [("seconds", ctypes.c_long), ("nanoseconds", ctypes.c_long)]
+
+            libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+            host_buffer = ctypes.create_string_buffer(16)
+            wait = Timespec(5, 0)
+            get_host = libc.gethostuuid
+            get_host.argtypes = [ctypes.c_void_p, ctypes.POINTER(Timespec)]
+            get_host.restype = ctypes.c_int
+            if get_host(host_buffer, ctypes.byref(wait)) != 0 or not any(host_buffer.raw):
+                return None, None
+            host = str(uuid.UUID(bytes=host_buffer.raw))
+            boot_buffer = ctypes.create_string_buffer(37)  # UUID plus trailing NUL
+            length = ctypes.c_size_t(len(boot_buffer))
+            get_boot = libc.sysctlbyname
+            get_boot.argtypes = [ctypes.c_char_p, ctypes.c_void_p,
+                                 ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+            get_boot.restype = ctypes.c_int
+            if (get_boot(b"kern.bootsessionuuid", boot_buffer, ctypes.byref(length), None, 0) != 0
+                    or length.value != len(boot_buffer) or boot_buffer.raw[-1:] != b"\0"):
+                return None, None
+            boot = boot_buffer.raw[:-1].decode("ascii")
         else:
             return None, None
         uuid_pattern = r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
@@ -230,7 +244,7 @@ def system_identity():
         if not re.fullmatch(host_pattern, host) or not re.fullmatch(uuid_pattern, boot):
             return None, None
         return host.lower(), boot.lower()
-    except (OSError, subprocess.SubprocessError, TypeError):
+    except (OSError, AttributeError, ValueError, TypeError):
         return None, None
 
 
