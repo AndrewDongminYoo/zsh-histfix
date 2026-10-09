@@ -52,6 +52,9 @@ histfix() {
       # starts that position at its end, which avoids duplicate imports.
       HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" "$@" || result=$?
       (( result == 10 )) || return $result
+      # fc -P later restores the values current at fc -p, so undo the
+      # flush-only SAVEHIST override first.
+      SAVEHIST=$histfix_savehist
       builtin fc -p "$HISTFILE" "$histfix_histsize" "$histfix_savehist" || return 2
       return 0
     fi

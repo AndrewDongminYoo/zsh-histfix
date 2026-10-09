@@ -1767,6 +1767,9 @@ runpy.run_path({str(HELPER)!r}, run_name="__main__")
                     self.assertIn(f"echo external-{action.split()[1]}", events())
             self.assertIn(b"echo token-old", self.history.read_bytes())
             self.assertNotIn(b"echo token-new", self.history.read_bytes())
+            # fc -P restores the values recorded by fc -p, not the function's local SAVEHIST.
+            send('fc -P; print -r -- "POPPED:$HISTSIZE/$SAVEHIST"')
+            self.assertIn(b"POPPED:100/90\r\n", until(b"HF> "))
             send('HISTFILE=""; exit')
             self.assertEqual(process.wait(timeout=5), 0)
 
