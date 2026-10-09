@@ -1728,7 +1728,7 @@ runpy.run_path({str(HELPER)!r}, run_name="__main__")
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_share_history_applies_and_undoes_without_duplicates(self):
-        self.write(b": 100:1;echo old\n: 101:1;echo keep\n")
+        self.write(b": 100:1;echo token-old\n: 101:1;echo keep\n")
         listing = Path(str(self.history) + ".listing")
         with self.interactive_zsh("SAVEHIST=90; setopt EXTENDED_HISTORY SHARE_HISTORY") as (
                 send, until, process):
@@ -1743,8 +1743,10 @@ runpy.run_path({str(HELPER)!r}, run_name="__main__")
                 repeated = sorted({event for event in listed if listed.count(event) > 1})
                 self.assertEqual(repeated, [], listed)
 
-            for action, removed, kept in (("histfix replace old new", "echo old", "echo new"),
-                                          ("histfix undo", "echo new", "echo old")):
+            for action, removed, kept in (
+                ("histfix replace token-old token-new", "echo token-old", "echo token-new"),
+                ("histfix undo", "echo token-new", "echo token-old"),
+            ):
                 with self.subTest(action=action):
                     send(f"{action} <<< y; "
                          'print -r -- "CODE:$? SIZES:$HISTSIZE/$SAVEHIST OPTION:$options[sharehistory]"')
@@ -1763,10 +1765,35 @@ runpy.run_path({str(HELPER)!r}, run_name="__main__")
                     send(":")
                     until(b"HF> ")
                     self.assertIn(f"echo external-{action.split()[1]}", events())
-            self.assertIn(b"echo old", self.history.read_bytes())
-            self.assertNotIn(b"echo new", self.history.read_bytes())
+            self.assertIn(b"echo token-old", self.history.read_bytes())
+            self.assertNotIn(b"echo token-new", self.history.read_bytes())
             send('HISTFILE=""; exit')
             self.assertEqual(process.wait(timeout=5), 0)
+
+    def test_share_history_exit_after_apply_keeps_the_replacement(self):
+        # The exit-time save must not restore the history level below fc -p.
+        # SAVEHIST=5 makes that save trim and rewrite the whole file.
+        self.write(b": 100:1;echo first\n: 101:1;echo token-old\n")
+        with self.interactive_zsh("SAVEHIST=5; setopt EXTENDED_HISTORY SHARE_HISTORY") as (
+                send, until, process):
+            send("histfix replace token-old token-new <<< y")
+            self.assertIn(b"History updated.", until(b"HF> "))
+            for step in range(2):
+                send(f"echo step-{step}")
+                until(b"HF> ")
+            send("exit")
+            self.assertEqual(process.wait(timeout=5), 0)
+        saved = self.history.read_bytes()
+        commands = [line.split(b";", 1)[1] for line in saved.splitlines()]
+        self.assertNotIn(b"echo first", commands, saved)  # the exit save trimmed the file
+        self.assertIn(b"echo token-new", commands)
+        self.assertNotIn(b"echo token-old", commands)
+        self.assertEqual(len(commands), len(set(commands)), saved)
+
+    def test_validate_treats_options_after_double_dash_as_text(self):
+        # The plugin refuses writes without history events unless validation says dry run.
+        self.assertEqual(self.run_helper("--validate", "replace", "--", "old", "--dry-run").returncode, 11)
+        self.assertEqual(self.run_helper("--validate", "replace", "--dry-run", "old", "new").returncode, 12)
 
 
 if __name__ == "__main__":
