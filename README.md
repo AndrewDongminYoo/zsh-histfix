@@ -125,7 +125,8 @@ Do not use another history-rewriting tool concurrently.
 A replacement changes the history file, but copies of the old text can remain elsewhere:
 
 - Other open shells keep the old commands in memory, also with `SHARE_HISTORY`. They show them in their history and can write them back with `fc -W`.
-- With `SHARE_HISTORY`, the current shell keeps its previous history level until it exits. `fc -P` restores that level, including the old commands.
+- With `SHARE_HISTORY`, each replacement or undo adds a history level in the current shell, and the level below keeps the old commands until the shell exits. `fc -P` restores that level. Each level holds a full copy of the history list, so memory use grows with each replacement in a long-running shell.
+- `zsh-hist`'s `hist undo` runs `fc -P` and then `fc -W`. After a histfix replacement with `SHARE_HISTORY`, it would restore the previous level and write the old commands back to the history file.
 - `<HISTFILE>.histfix-undo.json` contains the complete history from before the last replacement until the next replacement or a successful undo. Delete it if you do not need to undo.
 - If a histfix process is killed, its private temporary directory under `$TMPDIR` or a `.<history file name>.*` temporary file beside the history file can keep a copy of the history.
 - Backups and synchronized copies of the history file are not changed.
