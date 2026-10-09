@@ -30,13 +30,10 @@ histfix() {
     print -ru2 -- 'histfix: requires interactive zsh with HISTFILE, HISTSIZE, and SAVEHIST set'
     return 2
   fi
-  if (( histfix_shared && result != 12 )); then
-    print -ru2 -- 'histfix: cannot apply changes with SHARE_HISTORY enabled; use --dry-run or a fresh shell configured without SHARE_HISTORY'
-    return 2
-  fi
 
   # fc -AI rewrites its destination. Export in a subshell so a failed flush
   # neither rewrites existing records nor marks pending commands as saved.
+  local -i histfix_histsize=$HISTSIZE histfix_savehist=$SAVEHIST
   local -i SAVEHIST=2147483647
   local histfix_tmp pending memory
   histfix_tmp=$(command mktemp -d "${TMPDIR:-/tmp}/histfix.XXXXXXXX") || return 2
@@ -47,9 +44,28 @@ histfix() {
     HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" --flush "$pending" || return 2
     # Mark the parent's events saved only after their durable append succeeds.
     builtin fc -AI "$pending" || return 2
+    result=0
+    if (( histfix_shared )); then
+      # Other shells' imports change the event list at every prompt, so no
+      # memory snapshot can be matched. fc -R cannot reset the shared-history
+      # read position either. A new history level reads the rewritten file and
+      # starts that position at its end, which avoids duplicate imports.
+      HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" "$@" || result=$?
+      (( result == 10 )) || return $result
+      # fc -p locks HISTFILE before reading it, and zsh waits forever on a
+      # directory lock. The helper already reported a retained histfix lock.
+      if [[ -d $HISTFILE.LOCK ]]; then
+        print -ru2 -- "histfix: did not reload this shell's history while $HISTFILE.LOCK remains; recover the lock, then open a new shell"
+        return 0
+      fi
+      # fc -P later restores the values current at fc -p, so undo the
+      # flush-only SAVEHIST override first.
+      SAVEHIST=$histfix_savehist
+      builtin fc -p "$HISTFILE" "$histfix_histsize" "$histfix_savehist" || return 2
+      return 0
+    fi
     # Inspect all events, including those excluded from the real history file.
     ( local HISTORY_IGNORE=''; builtin fc -W "$memory" ) || return 2
-    result=0
     HISTFIX_FILE="$HISTFILE" HISTFIX_MEMORY="$memory" HISTFIX_HISTORY_COUNT="${#history}" \
       command "$python" "$_HISTFIX_HELPER" "$@" || result=$?
     if (( result == 10 )); then

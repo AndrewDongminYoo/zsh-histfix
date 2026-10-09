@@ -1700,43 +1700,126 @@ runpy.run_path({str(HELPER)!r}, run_name="__main__")
                     send('HISTFILE=""; exit')
                     self.assertEqual(process.wait(timeout=5), 0)
 
-    def test_share_history_refuses_writes_but_allows_preview_without_duplicates(self):
-        for action, expected_code in (
-            ("histfix replace old new", 2),
-            ("histfix undo", 2),
-            ("histfix replace -- old --dry-run", 2),
-            ("histfix replace --dry-run old new", 0),
-        ):
-            with self.subTest(action=action):
-                self.write(b": 100:1;echo old\n")
-                if action == "histfix undo":
-                    self.assertEqual(self.run_helper("replace", "old", "new").returncode, 10)
-                with self.interactive_zsh("setopt EXTENDED_HISTORY SHARE_HISTORY") as (send, until, process):
-                    send('cp "$HISTFILE" "$HISTFILE.before-disk"; '
-                         '( fc -W "$HISTFILE.before-memory" ); '
-                         f'{action} <<< y; histfix_exit=$?; '
-                         '( fc -W "$HISTFILE.after-memory" ); '
-                         'print -r -- "CODE:$histfix_exit OPTION:$options[sharehistory]"')
-                    output = until(b"HF> ")
-                    self.assertIn(f"CODE:{expected_code} OPTION:on\r\n".encode(), output)
-                    if expected_code:
-                        self.assertIn(b"cannot apply changes with SHARE_HISTORY", output)
-                    else:
-                        self.assertIn(b"entries would change.", output)
-                    self.assertEqual(self.history.read_bytes(),
-                                     Path(str(self.history) + ".before-disk").read_bytes())
-                    self.assertEqual(Path(str(self.history) + ".before-memory").read_bytes(),
-                                     Path(str(self.history) + ".after-memory").read_bytes())
-                    for _ in range(2):
-                        send(":")
+    def test_share_history_preview_keeps_disk_and_memory(self):
+        action = "histfix replace --dry-run old new"
+        self.write(b": 100:1;echo old\n")
+        with self.interactive_zsh("setopt EXTENDED_HISTORY SHARE_HISTORY") as (send, until, process):
+            send('cp "$HISTFILE" "$HISTFILE.before-disk"; '
+                 '( fc -W "$HISTFILE.before-memory" ); '
+                 f'{action} <<< y; histfix_exit=$?; '
+                 '( fc -W "$HISTFILE.after-memory" ); '
+                 'print -r -- "CODE:$histfix_exit OPTION:$options[sharehistory]"')
+            output = until(b"HF> ")
+            self.assertIn(b"CODE:0 OPTION:on\r\n", output)
+            self.assertIn(b"entries would change.", output)
+            self.assertEqual(self.history.read_bytes(),
+                             Path(str(self.history) + ".before-disk").read_bytes())
+            self.assertEqual(Path(str(self.history) + ".before-memory").read_bytes(),
+                             Path(str(self.history) + ".after-memory").read_bytes())
+            for _ in range(2):
+                send(":")
+                until(b"HF> ")
+            send('fc -W "$HISTFILE.later-memory"')
+            until(b"HF> ")
+            later = Path(str(self.history) + ".later-memory").read_bytes()
+            self.assertEqual(later.count(action.encode()), 1, repr(later))
+            self.assertEqual(later.count(b"PROMPT='HF''> '"), 1, repr(later))
+            send('HISTFILE=""; exit')
+            self.assertEqual(process.wait(timeout=5), 0)
+
+    def test_share_history_applies_and_undoes_without_duplicates(self):
+        self.write(b": 100:1;echo token-old\n: 101:1;echo keep\n")
+        listing = Path(str(self.history) + ".listing")
+        with self.interactive_zsh("SAVEHIST=90; setopt EXTENDED_HISTORY SHARE_HISTORY") as (
+                send, until, process):
+            def events():
+                # fc -l reads the list without writing a history file.
+                send(f"fc -ln 1 >| {shlex.quote(str(listing))}")
+                until(b"HF> ")
+                return [line.strip() for line in listing.read_text().splitlines()
+                        if not line.strip().startswith("fc -ln 1")]
+
+            def assert_unique(listed):
+                repeated = sorted({event for event in listed if listed.count(event) > 1})
+                self.assertEqual(repeated, [], listed)
+
+            for action, removed, kept in (
+                ("histfix replace token-old token-new", "echo token-old", "echo token-new"),
+                ("histfix undo", "echo token-new", "echo token-old"),
+            ):
+                with self.subTest(action=action):
+                    send(f"{action} <<< y; "
+                         'print -r -- "CODE:$? SIZES:$HISTSIZE/$SAVEHIST OPTION:$options[sharehistory]"')
+                    self.assertIn(b"CODE:0 SIZES:100/90 OPTION:on\r\n", until(b"HF> "))
+                    for step in range(3):
+                        send(f"echo {action.split()[1]}-{step}")
                         until(b"HF> ")
-                    send('fc -W "$HISTFILE.later-memory"')
+                    listed = events()
+                    self.assertIn(kept, listed)
+                    self.assertNotIn(removed, listed)
+                    assert_unique(listed)
+                    # A later record from another writer is still imported at a prompt.
+                    with self.history.open("ab") as stream:
+                        stream.write(f": {int(time.time())}:0;echo external-{action.split()[1]}\n"
+                                     .encode())
+                    send(":")
                     until(b"HF> ")
-                    later = Path(str(self.history) + ".later-memory").read_bytes()
-                    self.assertEqual(later.count(action.encode()), 1, repr(later))
-                    self.assertEqual(later.count(b"PROMPT='HF''> '"), 1, repr(later))
-                    send('HISTFILE=""; exit')
-                    self.assertEqual(process.wait(timeout=5), 0)
+                    self.assertIn(f"echo external-{action.split()[1]}", events())
+            self.assertIn(b"echo token-old", self.history.read_bytes())
+            self.assertNotIn(b"echo token-new", self.history.read_bytes())
+            # fc -P restores the values recorded by fc -p, not the function's local SAVEHIST.
+            send('fc -P; print -r -- "POPPED:$HISTSIZE/$SAVEHIST"')
+            self.assertIn(b"POPPED:100/90\r\n", until(b"HF> "))
+            send('HISTFILE=""; exit')
+            self.assertEqual(process.wait(timeout=5), 0)
+
+    def test_share_history_exit_after_apply_keeps_the_replacement(self):
+        # The exit-time save must not restore the history level below fc -p.
+        # SAVEHIST=5 makes that save trim and rewrite the whole file.
+        self.write(b": 100:1;echo first\n: 101:1;echo token-old\n")
+        with self.interactive_zsh("SAVEHIST=5; setopt EXTENDED_HISTORY SHARE_HISTORY") as (
+                send, until, process):
+            send("histfix replace token-old token-new <<< y")
+            self.assertIn(b"History updated.", until(b"HF> "))
+            for step in range(2):
+                send(f"echo step-{step}")
+                until(b"HF> ")
+            send("exit")
+            self.assertEqual(process.wait(timeout=5), 0)
+        saved = self.history.read_bytes()
+        commands = [line.split(b";", 1)[1] for line in saved.splitlines()]
+        self.assertNotIn(b"echo first", commands, saved)  # the exit save trimmed the file
+        self.assertIn(b"echo token-new", commands)
+        self.assertNotIn(b"echo token-old", commands)
+        self.assertEqual(len(commands), len(set(commands)), saved)
+
+    def test_share_history_skips_reload_when_lock_directory_remains(self):
+        # The helper keeps a committed change when it cannot remove .LOCK. fc -p
+        # would then wait for that directory forever, so the plugin must not call it.
+        self.write(b": 100:1;echo token-old\n")
+        wrapper = self.home / "python-leaving-lock"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            f'{shlex.quote(sys.executable)} "$@"\n'
+            "status=$?\n"
+            '[ "$status" -eq 10 ] && mkdir -m 700 "$HISTFIX_FILE.LOCK"\n'
+            'exit "$status"\n')
+        wrapper.chmod(0o755)
+        with self.interactive_zsh(f"HISTFIX_PYTHON={shlex.quote(str(wrapper))}; "
+                                  "setopt EXTENDED_HISTORY SHARE_HISTORY") as (send, until, process):
+            send('histfix replace token-old token-new <<< y; print -r -- "CODE:$?"')
+            output = until(b"HF> ")
+            self.assertIn(b"CODE:0\r\n", output)
+            self.assertIn(b"did not reload", output)
+            send('HISTFILE=""; exit')
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.assertIn(b"echo token-new", self.history.read_bytes())
+        Path(str(self.history) + ".LOCK").rmdir()
+
+    def test_validate_treats_options_after_double_dash_as_text(self):
+        # The plugin refuses writes without history events unless validation says dry run.
+        self.assertEqual(self.run_helper("--validate", "replace", "--", "old", "--dry-run").returncode, 11)
+        self.assertEqual(self.run_helper("--validate", "replace", "--dry-run", "old", "new").returncode, 12)
 
 
 if __name__ == "__main__":
