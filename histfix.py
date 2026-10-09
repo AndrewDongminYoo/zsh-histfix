@@ -4,6 +4,7 @@ import argparse
 import base64
 from collections import defaultdict
 from contextlib import contextmanager
+import ctypes
 import fcntl
 import io
 import json
@@ -11,8 +12,11 @@ import os
 from pathlib import Path
 import re
 import stat
+import struct
+import subprocess
 import sys
 import tempfile
+import uuid
 
 
 APPLIED = 10
@@ -178,21 +182,190 @@ def atomic_write(target, data, mode, *, gid=None):
             os.unlink(name)
 
 
+def process_start(pid):
+    """Return a kernel start identity, never a rounded ps timestamp."""
+    try:
+        if sys.platform == "linux":
+            # comm can contain spaces and ')'; fields after its final ')' start at 3.
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            return fields[19]  # field 22: start ticks since boot
+        if sys.platform == "darwin":
+            # proc_bsdinfo from the macOS SDK, PROC_PIDTBSDINFO = 3.
+            layout = "=12I16s32s6I2Q"
+            size = struct.calcsize(layout)
+            buffer = ctypes.create_string_buffer(size)
+            probe = ctypes.CDLL("/usr/lib/libproc.dylib").proc_pidinfo
+            probe.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                              ctypes.c_void_p, ctypes.c_int]
+            probe.restype = ctypes.c_int
+            if probe(pid, 3, 0, buffer, size) == size:
+                values = struct.unpack(layout, buffer.raw)
+                if values[3] == pid and values[-2] > 0:
+                    return f"{values[-2]}:{values[-1]}"
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def system_identity():
+    """Identify this machine and boot; unavailable identities disable recovery."""
+    try:
+        if sys.platform == "linux":
+            host = Path("/etc/machine-id").read_text().strip()
+            boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        elif sys.platform == "darwin":
+            host_output = subprocess.check_output(
+                ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                text=True, timeout=5, stderr=subprocess.DEVNULL,
+            )
+            host = re.search(r'"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]+)"', host_output)[1]
+            boot = subprocess.check_output(
+                ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+                text=True, timeout=5, stderr=subprocess.DEVNULL,
+            ).strip()
+        else:
+            return None, None
+        uuid_pattern = r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
+        host_pattern = r"[0-9a-fA-F]{32}" if sys.platform == "linux" else uuid_pattern
+        if not re.fullmatch(host_pattern, host) or not re.fullmatch(uuid_pattern, boot):
+            return None, None
+        return host.lower(), boot.lower()
+    except (OSError, subprocess.SubprocessError, TypeError):
+        return None, None
+
+
+def lock_owner():
+    host, boot = system_identity()
+    try:
+        namespace = os.readlink("/proc/self/ns/pid") if sys.platform == "linux" else "host"
+    except OSError:
+        namespace = None
+    return dict(format="histfix-lock-v1", platform=sys.platform, host=host, boot=boot,
+                namespace=namespace, pid=os.getpid(), uid=os.getuid(), start=process_start(os.getpid()),
+                token=uuid.uuid4().hex)
+
+
+def abandoned_owner(owner, current):
+    """Only a recognized owner on this host can be proved abandoned."""
+    if not isinstance(owner, dict) or set(owner) != set(current):
+        return False
+    if (owner["format"] != "histfix-lock-v1" or owner["platform"] != current["platform"]
+            or type(owner["pid"]) is not int or not 0 < owner["pid"] < 2**31
+            or type(owner["uid"]) is not int or owner["uid"] != os.getuid()):
+        return False
+    for key in ("host", "boot", "namespace", "start", "token"):
+        if not isinstance(owner[key], str) or not owner[key] or not current[key]:
+            return False
+    if (not re.fullmatch(r"[0-9a-f]{32}", owner["token"])
+            or not re.fullmatch(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", owner["boot"])
+            or not re.fullmatch(r"[1-9][0-9]*:[0-9]{1,6}" if sys.platform == "darwin" else r"[0-9]+",
+                                owner["start"])
+            or owner["host"] != current["host"]
+            or owner["namespace"] != current["namespace"]):
+        return False
+    if owner["boot"] != current["boot"]:
+        return True  # The same machine has rebooted since acquisition.
+    try:
+        os.kill(owner["pid"], 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False  # Includes permission-denied process probes.
+    start = process_start(owner["pid"])
+    return start is not None and start != owner["start"]  # PID reuse
+
+
+def same_inode(path, info):
+    try:
+        current = path.lstat()
+        return (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino)
+    except FileNotFoundError:
+        return False
+
+
+def recover_history_lock(lock, current):
+    # Never follow zsh symlinks, block on FIFOs, or read unbounded unknown data.
+    info = lock.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077 or info.st_size > 4096):
+        return False
+    fd = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if ((opened.st_dev, opened.st_ino, opened.st_mode, opened.st_uid,
+             opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+                != (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                    info.st_size, info.st_mtime_ns, info.st_ctime_ns)):
+            return False
+        try:
+            owner = json.loads(stream.read(4097))
+        except (ValueError, UnicodeError):
+            return False
+        if not abandoned_owner(owner, current) or not same_inode(lock, opened):
+            return False
+        checked = os.fstat(stream.fileno())
+        if ((checked.st_mode, checked.st_uid, checked.st_size,
+             checked.st_mtime_ns, checked.st_ctime_ns)
+                != (opened.st_mode, opened.st_uid, opened.st_size,
+                    opened.st_mtime_ns, opened.st_ctime_ns)):
+            return False
+        lock.unlink()
+        return True
+
+
 @contextmanager
 def history_lock(target):
-    # Respect both zsh's default .LOCK convention and HIST_FCNTL_LOCK.
+    # A persistent inode serializes inspection, recovery, and the whole write.
+    # Never unlink this guard: waiters could otherwise lock different inodes.
+    guard = Path(str(target) + ".histfix-lock")
     lock = Path(str(target) + ".LOCK")
-    try:
-        fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError as error:
-        raise ValueError("history is locked by another process; try again") from error
-    os.close(fd)
-    try:
-        with target.open("r+b") as stream:
-            fcntl.lockf(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            yield stream
-    finally:
-        lock.unlink()
+    busy = "history is locked by another process; try again (see README for manual recovery)"
+    fd = os.open(guard, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, "r+b") as guard_stream:
+        info = os.fstat(guard_stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077):
+            raise ValueError("unrecognized histfix recovery guard; see README for manual recovery")
+        try:
+            fcntl.flock(guard_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError(busy) from error
+        if not same_inode(guard, info):
+            raise ValueError("histfix recovery guard changed; try again")
+        owner = lock_owner()
+        # Publish complete metadata in one exclusive hard-link operation.
+        # A crash before publication cannot leave a partial/empty .LOCK.
+        staging_fd, staging = tempfile.mkstemp(prefix=".histfix-lock-", dir=target.parent)
+        acquired = None
+        metadata = os.fdopen(staging_fd, "wb")
+        try:
+            metadata.write(json.dumps(owner).encode("ascii"))
+            metadata.flush()
+            os.fsync(metadata.fileno())
+            staged_info = os.fstat(metadata.fileno())
+            try:
+                os.link(staging, lock)
+            except FileExistsError as error:
+                if not recover_history_lock(lock, owner):
+                    raise ValueError(busy) from error
+                try:
+                    os.link(staging, lock)
+                except FileExistsError as race:
+                    raise ValueError(busy) from race
+            acquired = staged_info
+            os.unlink(staging)
+            # Also respect zsh's HIST_FCNTL_LOCK; a live writer defeats entry.
+            with target.open("r+b") as stream:
+                fcntl.lockf(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                yield stream
+        finally:
+            try:
+                if acquired is not None and same_inode(lock, acquired):
+                    lock.unlink()
+                if os.path.exists(staging):
+                    os.unlink(staging)
+            finally:
+                metadata.close()
 
 
 def confirm():

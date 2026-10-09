@@ -114,6 +114,45 @@ The tool checks for changes made during preview and takes zsh-compatible history
 Another open shell can later save stale commands back to disk.
 Do not use another history-rewriting tool concurrently.
 
+## Abandoned history locks
+
+New histfix locks contain a versioned owner record with the user ID, machine ID,
+boot ID, PID, kernel process start identity, and a unique acquisition token.
+On Linux the record also identifies the PID namespace.
+A later invocation can recover a recognized lock from this machine when the
+owner has exited, the PID belongs to a different process, or the machine has
+rebooted. Lock age alone never establishes abandonment.
+macOS uses the platform UUID, boot session UUID, and `proc_pidinfo` start time;
+Linux uses the machine ID, boot ID, and `/proc` process start ticks.
+If those identities or process probes are unavailable, recovery is refused.
+
+Recovery and writing share a nonblocking advisory lock on the persistent
+`<HISTFILE>.histfix-lock` file (mode `0600`). This guard prevents two histfix
+processes from recovering the same abandoned lock and entering together.
+The guard remains after normal exit; its kernel lock is released automatically,
+including after `SIGKILL`. Do not delete or replace the guard while a writer may
+be using it. Complete owner metadata is published atomically as `<HISTFILE>.LOCK`;
+normal exit removes only the lock inode acquired by that invocation.
+An interrupted publication can leave a private `.histfix-lock-*` staging file,
+which is not an active lock and is never interpreted as history.
+
+Active histfix owners, zsh symlink and regular-file/hard-link locks, legacy empty
+locks, unknown formats, foreign hosts/namespaces, and ambiguous process identities
+are preserved. The helper also respects zsh's `HIST_FCNTL_LOCK` advisory lock.
+These checks do not synchronize live shells or make a shared network history safe.
+Close other shells sharing `HISTFILE` before replacement or undo, as described above.
+
+For a refused lock that needs manual recovery, first stop all histfix operations
+and close every shell or other writer using the resolved history path, including
+writers on another host if the file is shared. Back up the history and inspect
+`<HISTFILE>.LOCK` (including a symlink's target) and the owner information.
+Only after independently confirming that no writer is active, remove that
+specific `.LOCK` and retry. Do not remove a lock merely because it is old or a PID
+looks absent on a different host. Keep the persistent `.histfix-lock` guard;
+if its ownership, type, or permissions are unrecognized, inspect and repair it
+only while all writers are stopped. Legacy locks have no reliable ownership
+information and require this manual check.
+
 ## Development
 
 Tests use temporary files and isolated zsh processes; they do not read the operator's history.
