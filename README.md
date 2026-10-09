@@ -19,7 +19,6 @@ source /absolute/path/to/zsh-histfix/histfix.plugin.zsh
 Set `HISTFIX_PYTHON` if `python3` is not on your `PATH`.
 The plugin reads it each time `histfix` runs, so you can set it before or after sourcing.
 The plugin can coexist with Oh My Zsh and `zsh-autosuggestions`.
-Oh My Zsh users must also change their history options, as described in [Oh My Zsh](#oh-my-zsh).
 It does not change key bindings or shell options persistently.
 It adds its own directory to `fpath` and registers completion for commands and options, but it never runs `compinit`.
 Completion works whether you source the plugin before or after `compinit`.
@@ -43,21 +42,15 @@ git clone https://github.com/AndrewDongminYoo/zsh-histfix.git "${ZSH_CUSTOM:-${Z
 
 A clone in a directory named `zsh-histfix` is reported as `plugin 'zsh-histfix' not found`.
 
-Oh My Zsh enables `SHARE_HISTORY` in its `lib/history.zsh`.
-With that option enabled, histfix previews with `--dry-run` but refuses replacement and undo, as described in [History and undo](#history-and-undo).
-To apply changes, add `histfix` to `plugins`, disable the option after Oh My Zsh loads, and keep incremental writes:
+Then add `histfix` to `plugins` in `.zshrc` and open a new shell:
 
 ```zsh
 plugins=(git histfix)
 source "$ZSH/oh-my-zsh.sh"
-unsetopt share_history
-setopt inc_append_history
 ```
 
-Then open a new shell.
-`SHARE_HISTORY` also wrote each command to the history file as it was entered.
-Without `INC_APPEND_HISTORY`, zsh writes the session's commands only when the shell exits, so a killed terminal loses them.
-Open shells no longer import each other's commands at each prompt, and new shells still read the saved history file.
+Oh My Zsh enables `SHARE_HISTORY` in its `lib/history.zsh`.
+Replacement and undo work with that option, as described in [History and undo](#history-and-undo).
 
 ## Usage
 
