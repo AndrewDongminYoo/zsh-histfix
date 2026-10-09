@@ -1524,6 +1524,21 @@ HISTFILE=''
         self.assertEqual([path.name for path in self.home.iterdir()
                           if path.name.startswith("history")], ["history"])
 
+        # As with pending commands, the flush creates a missing history file.
+        self.history.unlink()
+        result = self.run_zsh('''
+HISTFILE=$1
+HISTSIZE=100
+SAVEHIST=100
+source "$2" || exit 90
+histfix replace --dry-run old new || exit 91
+HISTFILE=''
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("0 entries would change.", result.stdout)
+        self.assertEqual(self.history.read_bytes(), b"")
+        self.assertEqual(self.history.stat().st_mode & 0o777, 0o600)
+
     @contextmanager
     def interactive_zsh(self, configure):
         master, slave = pty.openpty()

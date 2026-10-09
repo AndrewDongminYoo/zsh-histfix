@@ -38,6 +38,9 @@ histfix() {
         print -ru2 -- 'histfix: the current shell has no history events; run histfix from an interactive prompt'
         return 2
       fi
+      # An empty flush still creates a missing history file before the preview.
+      : >| "$pending"
+      HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" --flush "$pending" || return 2
       HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" "$@"
       return
     fi
