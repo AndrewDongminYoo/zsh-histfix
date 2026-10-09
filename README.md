@@ -21,6 +21,8 @@ The plugin reads it each time `histfix` runs, so you can set it before or after 
 The plugin can coexist with Oh My Zsh and `zsh-autosuggestions`.
 Oh My Zsh users must also change one history option, as described in [Oh My Zsh](#oh-my-zsh).
 It does not change key bindings or shell options persistently.
+It adds its own directory to `fpath` and registers completion for commands and options, but it never runs `compinit`.
+Completion works whether you source the plugin before or after `compinit`.
 
 The [Homebrew tap](https://github.com/AndrewDongminYoo/homebrew-tap) provides a HEAD-only development formula:
 
