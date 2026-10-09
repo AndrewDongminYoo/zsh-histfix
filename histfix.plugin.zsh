@@ -31,6 +31,16 @@ histfix() {
   memory="$histfix_tmp/memory"
   {
     ( builtin fc -AI "$pending" ) || return 2
+    # fc writes no file for an empty history list, which a prompt never has.
+    # Nothing is pending, and no memory snapshot exists to reload after a write.
+    if [[ ! -e $pending ]]; then
+      if (( result != 12 )); then
+        print -ru2 -- 'histfix: the current shell has no history events; run histfix from an interactive prompt'
+        return 2
+      fi
+      HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" "$@"
+      return
+    fi
     HISTFIX_FILE="$HISTFILE" command "$python" "$_HISTFIX_HELPER" --flush "$pending" || return 2
     # Mark the parent's events saved only after their durable append succeeds.
     builtin fc -AI "$pending" || return 2
