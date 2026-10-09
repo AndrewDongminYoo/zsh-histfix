@@ -19,7 +19,7 @@ source /absolute/path/to/zsh-histfix/histfix.plugin.zsh
 Set `HISTFIX_PYTHON` if `python3` is not on your `PATH`.
 The plugin reads it each time `histfix` runs, so you can set it before or after sourcing.
 The plugin can coexist with Oh My Zsh and `zsh-autosuggestions`.
-Oh My Zsh users must also change one history option, as described in [Oh My Zsh](#oh-my-zsh).
+Oh My Zsh users must also change their history options, as described in [Oh My Zsh](#oh-my-zsh).
 It does not change key bindings or shell options persistently.
 It adds its own directory to `fpath` and registers completion for commands and options, but it never runs `compinit`.
 Completion works whether you source the plugin before or after `compinit`.
