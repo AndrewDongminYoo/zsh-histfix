@@ -189,7 +189,8 @@ merely because it is old or a PID looks absent on a different host. Keep the
 persistent `.histfix-lock` guard; inspect and repair an unrecognized guard only
 while all writers are stopped. Lock cleanup errors report the retained path as
 a warning and do not prevent a committed change from refreshing current-shell
-history.
+history, except with `SHARE_HISTORY`: while `.LOCK` remains, that refresh is
+skipped, as described in [History and undo](#history-and-undo).
 
 ## Development
 
