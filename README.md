@@ -36,7 +36,7 @@ Add the `source` line to `.zshrc` to load the installed plugin in new shells.
 Oh My Zsh loads `plugins/<name>/<name>.plugin.zsh`, so clone into a directory named `histfix`:
 
 ```zsh
-git clone https://github.com/AndrewDongminYoo/zsh-histfix.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/histfix"
+git clone https://github.com/AndrewDongminYoo/zsh-histfix.git "${ZSH_CUSTOM:-${ZSH:-$HOME/.oh-my-zsh}/custom}/plugins/histfix"
 ```
 
 A clone in a directory named `zsh-histfix` is reported as `plugin 'zsh-histfix' not found`.
