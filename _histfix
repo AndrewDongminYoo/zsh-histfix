@@ -1,0 +1,41 @@
+#compdef histfix
+
+# Complete commands and options only. FIND and REPLACEMENT are free text.
+local curcontext=$curcontext state line ret=1
+local -a commands
+commands=(
+  'replace:preview and replace history text'
+  'undo:undo the last replacement'
+)
+
+_arguments -C \
+  '(- *)'{-h,--help}'[show help]' \
+  '1: :->command' \
+  '*:: :->argument' && ret=0
+
+case $state in
+  command)
+    _describe -t commands 'histfix command' commands && ret=0
+    ;;
+  argument)
+    curcontext=${curcontext%:*:*}:histfix-$words[1]:
+    case $words[1] in
+      replace)
+        _arguments -S \
+          '(- *)'{-h,--help}'[show help]' \
+          '--regex[use Python regex syntax]' \
+          '--ignore-case[match without case sensitivity]' \
+          '--dry-run[preview without applying]' \
+          ':find text:_nothing' \
+          ':replacement text:_nothing' && ret=0
+        ;;
+      undo)
+        _arguments \
+          '(- *)'{-h,--help}'[show help]' \
+          '--dry-run[preview without applying]' && ret=0
+        ;;
+    esac
+    ;;
+esac
+
+return ret

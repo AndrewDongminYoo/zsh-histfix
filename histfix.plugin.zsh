@@ -1,6 +1,19 @@
 # Source this file after configuring HISTFILE, HISTSIZE, and SAVEHIST.
 typeset -g _HISTFIX_HELPER="${${(%):-%x}:A:h}/histfix.py"
 
+# Register completion without running compinit. A later compinit finds
+# _histfix through fpath; after compinit, compdef registers it directly.
+() {
+  emulate -L zsh
+  local dir=${_HISTFIX_HELPER:h}
+  [[ -r $dir/_histfix ]] || return 0
+  (( ${fpath[(Ie)$dir]} )) || fpath=("$dir" $fpath)
+  if (( $+functions[compdef] )); then
+    autoload -Uz _histfix
+    compdef _histfix histfix
+  fi
+}
+
 histfix() {
   local -i histfix_shared=0
   [[ -o share_history ]] && histfix_shared=1
