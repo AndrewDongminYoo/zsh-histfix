@@ -240,7 +240,7 @@ def lock_owner():
         namespace = os.readlink("/proc/self/ns/pid") if sys.platform == "linux" else "host"
     except OSError:
         namespace = None
-    return dict(format="histfix-lock-v1", platform=sys.platform, host=host, boot=boot,
+    return dict(format="histfix-lock-v2", platform=sys.platform, host=host, boot=boot,
                 namespace=namespace, pid=os.getpid(), uid=os.getuid(), start=process_start(os.getpid()),
                 token=uuid.uuid4().hex)
 
@@ -249,7 +249,7 @@ def abandoned_owner(owner, current):
     """Only a recognized owner on this host can be proved abandoned."""
     if not isinstance(owner, dict) or set(owner) != set(current):
         return False
-    if (owner["format"] != "histfix-lock-v1" or owner["platform"] != current["platform"]
+    if (owner["format"] != "histfix-lock-v2" or owner["platform"] != current["platform"]
             or type(owner["pid"]) is not int or not 0 < owner["pid"] < 2**31
             or type(owner["uid"]) is not int or owner["uid"] != os.getuid()):
         return False
@@ -283,34 +283,60 @@ def same_inode(path, info):
         return False
 
 
+def metadata_identity(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def read_lock_owner(directory_fd):
+    """Read only the exact private directory representation histfix creates."""
+    try:
+        if os.listdir(directory_fd) != ["owner.json"]:
+            return None
+        fd = os.open("owner.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=directory_fd)
+        with os.fdopen(fd, "rb") as metadata:
+            info = os.fstat(metadata.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_nlink != 1
+                    or not 0 < info.st_size <= 4096):
+                return None
+            data = metadata.read(4097)
+            if metadata_identity(os.fstat(metadata.fileno())) != metadata_identity(info):
+                return None
+            return info, data, json.loads(data)
+    except (OSError, ValueError, UnicodeError):
+        return None
+
+
 def recover_history_lock(lock, current):
-    # Never follow zsh symlinks, block on FIFOs, or read unbounded unknown data.
+    # zsh age-unlinks .LOCK independently of our guard. Never unlink a pathname
+    # it could replace with a live symlink: only histfix directories recover.
     info = lock.lstat()
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-            or info.st_mode & 0o077 or info.st_size > 4096):
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077):
         return False
-    fd = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, "rb") as stream:
-        opened = os.fstat(stream.fileno())
-        if ((opened.st_dev, opened.st_ino, opened.st_mode, opened.st_uid,
-             opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
-                != (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
-                    info.st_size, info.st_mtime_ns, info.st_ctime_ns)):
+    fd = os.open(lock, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if metadata_identity(os.fstat(fd)) != metadata_identity(info) or not same_inode(lock, info):
             return False
-        try:
-            owner = json.loads(stream.read(4097))
-        except (ValueError, UnicodeError):
+        saved = read_lock_owner(fd)
+        if saved is None:
             return False
-        if not abandoned_owner(owner, current) or not same_inode(lock, opened):
+        metadata, _, owner = saved
+        if not abandoned_owner(owner, current) or not same_inode(lock, info):
             return False
-        checked = os.fstat(stream.fileno())
-        if ((checked.st_mode, checked.st_uid, checked.st_size,
-             checked.st_mtime_ns, checked.st_ctime_ns)
-                != (opened.st_mode, opened.st_uid, opened.st_size,
-                    opened.st_mtime_ns, opened.st_ctime_ns)):
+        checked = os.stat("owner.json", dir_fd=fd, follow_symlinks=False)
+        if (metadata_identity(checked) != metadata_identity(metadata)
+                or os.listdir(fd) != ["owner.json"]):
             return False
-        lock.unlink()
+        # The opened directory stays stable; supported zsh writers cannot
+        # unlink it. rmdir cannot remove a fresh zsh regular file or symlink.
+        os.unlink("owner.json", dir_fd=fd)
+        os.rmdir(lock)
         return True
+    finally:
+        os.close(fd)
 
 
 @contextmanager
@@ -333,39 +359,50 @@ def history_lock(target):
         if not same_inode(guard, info):
             raise ValueError("histfix recovery guard changed; try again")
         owner = lock_owner()
-        # Publish complete metadata in one exclusive hard-link operation.
-        # A crash before publication cannot leave a partial/empty .LOCK.
-        staging_fd, staging = tempfile.mkstemp(prefix=".histfix-lock-", dir=target.parent)
-        acquired = None
-        metadata = os.fdopen(staging_fd, "wb")
+        data = json.dumps(owner).encode("ascii")
         try:
-            metadata.write(json.dumps(owner).encode("ascii"))
-            metadata.flush()
-            os.fsync(metadata.fileno())
-            staged_info = os.fstat(metadata.fileno())
+            lock.mkdir(mode=0o700)
+        except FileExistsError as error:
+            if not recover_history_lock(lock, owner):
+                raise ValueError(busy) from error
             try:
-                os.link(staging, lock)
-            except FileExistsError as error:
-                if not recover_history_lock(lock, owner):
-                    raise ValueError(busy) from error
-                try:
-                    os.link(staging, lock)
-                except FileExistsError as race:
-                    raise ValueError(busy) from race
-            acquired = staged_info
-            os.unlink(staging)
-            # Also respect zsh's HIST_FCNTL_LOCK; a live writer defeats entry.
+                lock.mkdir(mode=0o700)
+            except FileExistsError as race:
+                raise ValueError(busy) from race
+        acquired = lock.lstat()
+        directory_fd = None
+        published = False
+        try:
+            directory_fd = os.open(lock, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            if not same_inode(lock, os.fstat(directory_fd)):
+                raise ValueError("histfix lock directory changed; see README for manual recovery")
+            # Atomic owner publication; a crash before publication leaves an
+            # unrecognized directory for manual recovery, never a partial owner.
+            atomic_write(lock / "owner.json", data, 0o600)
+            published = True
             with target.open("r+b") as stream:
                 fcntl.lockf(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 yield stream
         finally:
             try:
-                if acquired is not None and same_inode(lock, acquired):
-                    lock.unlink()
-                if os.path.exists(staging):
-                    os.unlink(staging)
+                if same_inode(lock, acquired):
+                    saved = read_lock_owner(directory_fd) if directory_fd is not None else None
+                    if saved is not None and saved[1] == data:
+                        os.unlink("owner.json", dir_fd=directory_fd)
+                        os.rmdir(lock)
+                    elif not published and (directory_fd is None or not os.listdir(directory_fd)):
+                        os.rmdir(lock)
+                    else:
+                        print(f"histfix: lock changed; retained {lock} for manual recovery",
+                              file=sys.stderr)
+            except OSError as error:
+                # The write may already have committed: cleanup failure must
+                # still allow the plugin to refresh its current-shell history.
+                print(f"histfix: could not remove lock directory {lock}: {error}; "
+                      "see README for manual recovery", file=sys.stderr)
             finally:
-                metadata.close()
+                if directory_fd is not None:
+                    os.close(directory_fd)
 
 
 def confirm():

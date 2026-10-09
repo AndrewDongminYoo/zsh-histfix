@@ -28,7 +28,7 @@ class HistfixTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)
         self.history = self.home / "history"
-        self.env = dict(os.environ, HISTFIX_FILE=str(self.history))
+        self.env = dict(os.environ, HISTFIX_FILE=str(self.history), HISTFILE="")
 
     def run_helper(self, *args, answer="y\n"):
         return subprocess.run(
@@ -471,18 +471,27 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
         spec.loader.exec_module(helper)
         return helper
 
+    def write_owner_lock(self, owner):
+        lock = Path(str(self.history) + ".LOCK")
+        lock.mkdir(mode=0o700, exist_ok=True)
+        metadata = lock / "owner.json"
+        metadata.write_bytes(json.dumps(owner).encode())
+        metadata.chmod(0o600)
+        return lock, metadata
+
     def test_kill_during_publication_leaves_a_recoverable_complete_lock(self):
         self.write(b"echo old\n")
         code = """import importlib.util, pathlib, sys
 spec = importlib.util.spec_from_file_location('helper', sys.argv[1])
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
-original_link = helper.os.link
-def paused_link(source, target):
-    original_link(source, target)
-    print('PUBLISHED', flush=True)
-    sys.stdin.readline()
-helper.os.link = paused_link
+original_write = helper.atomic_write
+def paused_write(target, data, mode, **kwargs):
+    original_write(target, data, mode, **kwargs)
+    if target.name == 'owner.json':
+        print('PUBLISHED', flush=True)
+        sys.stdin.readline()
+helper.atomic_write = paused_write
 with helper.history_lock(pathlib.Path(sys.argv[2])):
     pass
 """
@@ -495,8 +504,8 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
                 self.assertTrue(select.select([child.stdout], [], [], 10)[0])
                 self.assertEqual(child.stdout.readline(), "PUBLISHED\n")
                 lock = Path(str(self.history) + ".LOCK")
-                self.assertEqual(json.loads(lock.read_bytes())["pid"], child.pid)
-                self.assertEqual(lock.stat().st_nlink, 2)
+                self.assertEqual(json.loads((lock / "owner.json").read_bytes())["pid"], child.pid)
+                self.assertEqual(lock.stat().st_mode & 0o777, 0o700)
             finally:
                 child.kill()
                 child.communicate(timeout=10)
@@ -505,7 +514,6 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
         self.assertEqual(result.returncode, 10, result.stderr)
         self.assertFalse(lock.exists())
         self.assertEqual(self.history.read_bytes(), b"echo new\n")
-        self.assertEqual(len(list(self.home.glob(".histfix-lock-*"))), 1)
 
     def test_normal_lock_publishes_owner_and_keeps_guard_inode(self):
         self.write(b"echo old\n")
@@ -514,8 +522,8 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
         guard = Path(str(self.history) + ".histfix-lock")
         for _ in range(2):
             with helper.history_lock(self.history):
-                owner = json.loads(lock.read_bytes())
-                self.assertEqual(owner["format"], "histfix-lock-v1")
+                owner = json.loads((lock / "owner.json").read_bytes())
+                self.assertEqual(owner["format"], "histfix-lock-v2")
                 self.assertEqual(owner["pid"], os.getpid())
                 self.assertEqual(owner["start"], helper.process_start(os.getpid()))
                 self.assertTrue(owner["host"] and owner["boot"])
@@ -528,31 +536,30 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
     def test_live_owner_and_old_lock_are_preserved(self):
         self.write(b"echo old\n")
         helper = self.load_helper()
-        lock = Path(str(self.history) + ".LOCK")
-        owner = json.dumps(helper.lock_owner()).encode()
-        lock.write_bytes(owner)
-        lock.chmod(0o600)
+        lock, metadata = self.write_owner_lock(helper.lock_owner())
+        owner = metadata.read_bytes()
         os.utime(lock, (0, 0))  # Age must never override a live owner.
         result = self.run_helper("replace", "old", "new")
         self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertEqual(lock.read_bytes(), owner)
+        self.assertEqual(metadata.read_bytes(), owner)
         self.assertEqual(self.history.read_bytes(), b"echo old\n")
-        lock.unlink()
+        metadata.unlink()
+        lock.rmdir()
         with self.child_history_lock():
-            before = lock.read_bytes()
+            before = metadata.read_bytes()
             result = self.run_helper("replace", "old", "new")
             self.assertEqual(result.returncode, 2, result.stderr)
-            self.assertEqual(lock.read_bytes(), before)
+            self.assertEqual(metadata.read_bytes(), before)
 
     def test_unknown_legacy_and_zsh_regular_locks_are_preserved(self):
         self.write(b"echo old\n")
         helper = self.load_helper()
         lock = Path(str(self.history) + ".LOCK")
         current = helper.lock_owner()
-        cases = [b"", b"12345\n", b"12345 host-fixture\n", b"/pid-12345/host-fixture\n", b"{", b"{}",
+        cases = [json.dumps(current).encode(), json.dumps(dict(current, format="histfix-lock-v1")).encode(), b"", b"12345\n", b"12345 host-fixture\n", b"/pid-12345/host-fixture\n", b"{", b"{}",
                  b"null", b"[]", b"x" * 4097]
         for change in (
-            dict(format="histfix-lock-v2"), dict(host="foreign-host"),
+            dict(format="histfix-lock-v3"), dict(host="foreign-host"),
             dict(namespace="foreign-namespace"), dict(start=None), dict(start="unknown"),
             dict(boot="unknown"), dict(boot="0" * 36), dict(pid=0), dict(pid=-1), dict(pid=True),
             dict(uid=os.getuid() + 1), dict(token="unknown"), dict(extra="unknown"),
@@ -601,12 +608,10 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
     def test_pid_reuse_and_previous_boot_recover_only_recognized_owners(self):
         self.write(b"echo old\n")
         helper = self.load_helper()
-        lock = Path(str(self.history) + ".LOCK")
         for change in (dict(start="1:0" if sys.platform == "darwin" else "1"),
                        dict(boot="00000000-0000-0000-0000-000000000000")):
             with self.subTest(change=change):
-                lock.write_text(json.dumps(dict(helper.lock_owner(), **change)))
-                lock.chmod(0o600)
+                lock, _ = self.write_owner_lock(dict(helper.lock_owner(), **change))
                 result = self.run_helper("replace", "old", "new")
                 self.assertEqual(result.returncode, 10, result.stderr)
                 self.assertFalse(lock.exists())
@@ -626,22 +631,20 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
             with self.subTest(key=key):
                 self.assertFalse(helper.abandoned_owner(old, dict(current, **{key: None})))
         self.write(b"echo old\n")
-        lock = Path(str(self.history) + ".LOCK")
-        lock.write_text(json.dumps(old))
-        lock.chmod(0o600)
-        before = lock.read_bytes()
+        lock, metadata = self.write_owner_lock(old)
+        before = metadata.read_bytes()
         with mock.patch.object(helper, "system_identity", return_value=(None, None)):
             with self.assertRaisesRegex(ValueError, "locked"):
                 with helper.history_lock(self.history):
                     self.fail("entered without host identity")
-        self.assertEqual(lock.read_bytes(), before)
+        self.assertEqual(metadata.read_bytes(), before)
 
     def test_cleanup_does_not_remove_a_replaced_lock(self):
         self.write(b"echo old\n")
         helper = self.load_helper()
         lock = Path(str(self.history) + ".LOCK")
         with helper.history_lock(self.history):
-            lock.unlink()
+            lock.rename(self.home / "retained-lock")
             lock.symlink_to("/pid-12345/host-fixture")
         self.assertTrue(lock.is_symlink())
         self.assertEqual(os.readlink(lock), "/pid-12345/host-fixture")
@@ -649,12 +652,10 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
     def test_recovery_does_not_remove_a_lock_changed_during_inspection(self):
         self.write(b"echo old\n")
         helper = self.load_helper()
-        lock = Path(str(self.history) + ".LOCK")
-        lock.write_text(json.dumps(helper.lock_owner()))
-        lock.chmod(0o600)
+        lock, _ = self.write_owner_lock(helper.lock_owner())
 
         def replace_lock(owner, current):
-            lock.unlink()
+            lock.rename(self.home / "retained-lock")
             lock.symlink_to("/pid-12345/host-fixture")
             return True
 
@@ -667,34 +668,31 @@ with helper.history_lock(pathlib.Path(sys.argv[2])):
     def test_in_place_owner_change_and_unsafe_permissions_are_preserved(self):
         self.write(b"echo old\n")
         helper = self.load_helper()
-        lock = Path(str(self.history) + ".LOCK")
-        lock.write_text(json.dumps(helper.lock_owner()))
-        lock.chmod(0o600)
+        lock, metadata = self.write_owner_lock(helper.lock_owner())
 
         def change_owner(owner, current):
-            lock.write_bytes(b"unknown replacement owner\n")
+            metadata.write_bytes(b"unknown replacement owner\n")
             return True
 
         with mock.patch.object(helper, "abandoned_owner", side_effect=change_owner):
             with self.assertRaisesRegex(ValueError, "locked"):
                 with helper.history_lock(self.history):
                     self.fail("entered after in-place owner change")
-        self.assertEqual(lock.read_bytes(), b"unknown replacement owner\n")
-        lock.write_text(json.dumps(dict(helper.lock_owner(), boot="00000000-0000-0000-0000-000000000000")))
-        lock.chmod(0o600)
+        self.assertEqual(metadata.read_bytes(), b"unknown replacement owner\n")
+        metadata.write_text(json.dumps(dict(helper.lock_owner(), boot="00000000-0000-0000-0000-000000000000")))
         original_open = helper.os.open
 
-        def changed_permissions(path, flags, *args):
-            if path == lock:
-                lock.chmod(0o666)
-            return original_open(path, flags, *args)
+        def changed_permissions(path, flags, *args, **kwargs):
+            if path == "owner.json":
+                metadata.chmod(0o666)
+            return original_open(path, flags, *args, **kwargs)
 
         with mock.patch.object(helper.os, "open", side_effect=changed_permissions):
             with self.assertRaisesRegex(ValueError, "locked"):
                 with helper.history_lock(self.history):
-                    self.fail("entered after lock permissions changed before open")
+                    self.fail("entered after owner permissions changed before open")
         self.assertEqual(self.run_helper("replace", "old", "new").returncode, 2)
-        self.assertEqual(lock.stat().st_mode & 0o777, 0o666)
+        self.assertEqual(metadata.stat().st_mode & 0o777, 0o666)
         self.assertEqual(self.history.read_bytes(), b"echo old\n")
 
     def test_linux_identity_probes_parse_kernel_fixtures(self):
@@ -787,7 +785,7 @@ except ValueError:
                 self.assertTrue(select.select([winner.stdout], [], [], 10)[0])
                 self.assertEqual(winner.stdout.readline(), "ENTERED\n")
                 lock = Path(str(self.history) + ".LOCK")
-                self.assertEqual(json.loads(lock.read_bytes())["pid"], winner.pid)
+                self.assertEqual(json.loads((lock / "owner.json").read_bytes())["pid"], winner.pid)
                 for child, outcome in zip(children, outcomes):
                     _, error = child.communicate("release\n" if outcome == "OBSERVED" else None,
                                                  timeout=10)
@@ -824,6 +822,204 @@ read -r reply
                 self.assertEqual(self.history.read_bytes(), b"echo old\n")
             finally:
                 child.communicate("release\n", timeout=10)
+
+    def test_aged_directory_lock_blocks_native_zsh_without_losing_history(self):
+        self.write(b"echo old\n")
+        lock = Path(str(self.history) + ".LOCK")
+        child = None
+        try:
+            with self.child_history_lock():
+                os.utime(lock, (time.time() - 30, time.time() - 30))
+                code = '''HISTFILE=$1; HISTSIZE=100; SAVEHIST=100
+unsetopt HIST_FCNTL_LOCK
+print -s -- 'echo zsh pending'
+print -r -- READY
+fc -A "$HISTFILE"
+print -r -- DONE
+HISTFILE=''
+'''
+                child = subprocess.Popen(
+                    ["zsh", "-f", "-i", "-c", code, "fixture", str(self.history)],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, env=dict(self.env, HOME=str(self.home), ZDOTDIR=str(self.home)),
+                )
+                self.assertTrue(select.select([child.stdout], [], [], 10)[0])
+                self.assertEqual(child.stdout.readline(), "READY\n")
+                with self.assertRaises(subprocess.TimeoutExpired,
+                                       msg="zsh entered while histfix held its aged lock"):
+                    child.wait(timeout=0.5)
+                self.assertEqual(self.history.read_bytes(), b"echo old\n")
+            output, error = child.communicate(timeout=10)
+            self.assertEqual(child.returncode, 0, error)
+            self.assertIn("DONE", output)
+            self.assertEqual(self.history.read_bytes(), b"echo old\necho zsh pending\n")
+        finally:
+            if child is not None:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate(timeout=10)
+
+    def test_zsh_winning_recovery_gap_is_preserved(self):
+        self.write(b"echo old\n")
+        helper = self.load_helper()
+        lock, _ = self.write_owner_lock(dict(helper.lock_owner(),
+                                             boot="00000000-0000-0000-0000-000000000000"))
+        original_recover = helper.recover_history_lock
+
+        def zsh_wins_gap(path, owner):
+            recovered = original_recover(path, owner)
+            self.assertTrue(recovered)
+            lock.symlink_to("/pid-12345/host-fixture")
+            return recovered
+
+        with mock.patch.object(helper, "recover_history_lock", side_effect=zsh_wins_gap):
+            with self.assertRaisesRegex(ValueError, "locked"):
+                with helper.history_lock(self.history):
+                    self.fail("entered despite a new zsh lock")
+        self.assertTrue(lock.is_symlink())
+        self.assertEqual(self.history.read_bytes(), b"echo old\n")
+
+    def test_unknown_directory_owners_and_extra_entries_are_preserved(self):
+        self.write(b"echo old\n")
+        helper = self.load_helper()
+        current = helper.lock_owner()
+        lock, metadata = self.write_owner_lock(current)
+        cases = [b"", b"{", b"null", b"[]", b"{}", b"x" * 4097]
+        for change in (
+            dict(format="histfix-lock-v1"), dict(format="histfix-lock-v3"),
+            dict(host="foreign-host"), dict(namespace="foreign-namespace"),
+            dict(start=None), dict(start="unknown"), dict(boot=None), dict(boot="0" * 36),
+            dict(pid=0), dict(pid=-1), dict(pid=True), dict(uid=os.getuid() + 1),
+            dict(token="unknown"), dict(extra="unknown"),
+        ):
+            cases.append(json.dumps(dict(current, **change)).encode())
+        for data in cases:
+            with self.subTest(data=data[:100]):
+                metadata.write_bytes(data)
+                result = self.run_helper("replace", "old", "new")
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(metadata.read_bytes(), data)
+                self.assertEqual(self.history.read_bytes(), b"echo old\n")
+        metadata.write_text(json.dumps(dict(current, boot="00000000-0000-0000-0000-000000000000")))
+        before = metadata.read_bytes()
+        extra = lock / "unrelated"
+        extra.write_bytes(b"retain this\n")
+        self.assertEqual(self.run_helper("replace", "old", "new").returncode, 2)
+        self.assertEqual(metadata.read_bytes(), before)
+        self.assertEqual(extra.read_bytes(), b"retain this\n")
+        extra.unlink()
+        lock.chmod(0o755)
+        self.assertEqual(self.run_helper("replace", "old", "new").returncode, 2)
+        self.assertEqual(metadata.read_bytes(), before)
+
+    def test_unknown_owner_file_types_and_incomplete_directories_are_preserved(self):
+        self.write(b"echo old\n")
+        lock = Path(str(self.history) + ".LOCK")
+        lock.mkdir(mode=0o700)
+        metadata = lock / "owner.json"
+        referent = self.home / "unrelated-owner"
+        referent.write_bytes(b"do not change\n")
+        for kind in ("missing", "symlink", "hardlink", "fifo", "directory"):
+            with self.subTest(kind=kind):
+                if kind == "symlink":
+                    metadata.symlink_to(referent)
+                elif kind == "hardlink":
+                    os.link(referent, metadata)
+                elif kind == "fifo":
+                    os.mkfifo(metadata, 0o600)
+                elif kind == "directory":
+                    metadata.mkdir()
+                result = self.run_helper("replace", "old", "new")
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertTrue(lock.is_dir())
+                self.assertEqual(referent.read_bytes(), b"do not change\n")
+                if kind == "directory":
+                    metadata.rmdir()
+                elif kind != "missing":
+                    metadata.unlink()
+        self.assertEqual(self.history.read_bytes(), b"echo old\n")
+
+    def test_lock_exceptions_release_directory_and_guard(self):
+        self.write(b"echo old\n")
+        helper = self.load_helper()
+        lock = Path(str(self.history) + ".LOCK")
+        with self.assertRaisesRegex(RuntimeError, "fixture"):
+            with helper.history_lock(self.history):
+                raise RuntimeError("fixture")
+        self.assertFalse(lock.exists())
+        original_write = helper.atomic_write
+
+        def fail_publication(target, data, mode, **kwargs):
+            if target.name == "owner.json":
+                raise OSError("publication fixture")
+            return original_write(target, data, mode, **kwargs)
+
+        with mock.patch.object(helper, "atomic_write", side_effect=fail_publication):
+            with self.assertRaisesRegex(OSError, "publication fixture"):
+                with helper.history_lock(self.history):
+                    self.fail("entered despite publication failure")
+        self.assertFalse(lock.exists())
+        with helper.history_lock(self.history):
+            self.assertTrue(lock.is_dir())
+        self.assertFalse(lock.exists())
+
+    def test_directory_open_and_fstat_failures_release_guard_and_fd(self):
+        self.write(b"echo old\n")
+        helper = self.load_helper()
+        lock = Path(str(self.history) + ".LOCK")
+        original_open = helper.os.open
+        original_fstat = helper.os.fstat
+        for fail_at in ("open", "fstat"):
+            directory_fds = []
+
+            def failed_open(path, flags, *args, **kwargs):
+                if path == lock and fail_at == "open":
+                    raise OSError("open fixture")
+                fd = original_open(path, flags, *args, **kwargs)
+                if path == lock:
+                    directory_fds.append(fd)
+                return fd
+
+            def failed_fstat(fd):
+                if fd in directory_fds:
+                    raise OSError("fstat fixture")
+                return original_fstat(fd)
+
+            with mock.patch.object(helper.os, "open", side_effect=failed_open), \
+                    mock.patch.object(helper.os, "fstat", side_effect=failed_fstat):
+                with self.assertRaisesRegex(OSError, fail_at + " fixture"):
+                    with helper.history_lock(self.history):
+                        self.fail("entered despite descriptor failure")
+            self.assertFalse(lock.exists())
+            for fd in directory_fds:
+                with self.assertRaises(OSError):
+                    original_fstat(fd)
+            with helper.history_lock(self.history):
+                self.assertTrue(lock.is_dir())
+            self.assertFalse(lock.exists())
+
+    def test_lock_cleanup_failure_keeps_applied_result(self):
+        self.write(b"echo old\n")
+        helper = self.load_helper()
+        lock = Path(str(self.history) + ".LOCK")
+        original_rmdir = helper.os.rmdir
+
+        def fail_lock_cleanup(path, *args, **kwargs):
+            if Path(path).resolve() == lock.resolve():
+                raise OSError("cleanup fixture")
+            return original_rmdir(path, *args, **kwargs)
+
+        error = io.StringIO()
+        with mock.patch.dict(os.environ, HISTFIX_FILE=str(self.history)), \
+                mock.patch.object(helper, "confirm", return_value=True), \
+                mock.patch.object(helper.os, "rmdir", side_effect=fail_lock_cleanup), \
+                mock.patch.object(helper.sys, "stderr", error):
+            self.assertEqual(helper.main(["replace", "old", "new"]), 10)
+        self.assertEqual(self.history.read_bytes(), b"echo new\n")
+        self.assertIn("could not remove lock directory", error.getvalue())
+        self.assertEqual(list(lock.iterdir()), [])
+        lock.rmdir()  # Manual cleanup is safe here: all fixture writers are stopped.
+        self.assertEqual(self.run_helper("undo").returncode, 10)
 
     def test_existing_zsh_lock_blocks_replacement(self):
         self.write(b"echo old\n")
