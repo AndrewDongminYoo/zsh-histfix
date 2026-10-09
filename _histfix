@@ -30,7 +30,7 @@ case $state in
           ':replacement text:_nothing' && ret=0
         ;;
       undo)
-        _arguments \
+        _arguments -S \
           '(- *)'{-h,--help}'[show help]' \
           '--dry-run[preview without applying]' && ret=0
         ;;
