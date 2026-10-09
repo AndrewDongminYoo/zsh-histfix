@@ -16,8 +16,10 @@ Clone this repository, then add this after your history configuration in `.zshrc
 source /absolute/path/to/zsh-histfix/histfix.plugin.zsh
 ```
 
-Set `HISTFIX_PYTHON` before sourcing if `python3` is not on your `PATH`.
+Set `HISTFIX_PYTHON` if `python3` is not on your `PATH`.
+The plugin reads it each time `histfix` runs, so you can set it before or after sourcing.
 The plugin can coexist with Oh My Zsh and `zsh-autosuggestions`.
+Oh My Zsh users must also change one history option, as described in [Oh My Zsh](#oh-my-zsh).
 It does not change key bindings or shell options persistently.
 
 The [Homebrew tap](https://github.com/AndrewDongminYoo/homebrew-tap) provides a HEAD-only development formula:
@@ -28,6 +30,30 @@ source "$(brew --prefix)/share/histfix/histfix.plugin.zsh"
 ```
 
 Add the `source` line to `.zshrc` to load the installed plugin in new shells.
+
+### Oh My Zsh
+
+Oh My Zsh loads `plugins/<name>/<name>.plugin.zsh`, so clone into a directory named `histfix`:
+
+```zsh
+git clone https://github.com/AndrewDongminYoo/zsh-histfix.git "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/histfix"
+```
+
+A clone in a directory named `zsh-histfix` is reported as `plugin 'zsh-histfix' not found`.
+
+Oh My Zsh enables `SHARE_HISTORY` in its `lib/history.zsh`.
+With that option enabled, histfix previews with `--dry-run` but refuses replacement and undo, as described in [History and undo](#history-and-undo).
+To apply changes, add `histfix` to `plugins` and disable the option after Oh My Zsh loads:
+
+```zsh
+plugins=(git histfix)
+source "$ZSH/oh-my-zsh.sh"
+unsetopt share_history
+```
+
+Then open a new shell.
+Without `SHARE_HISTORY`, open shells no longer import each other's commands at each prompt.
+New shells still read the saved history file.
 
 ## Usage
 
