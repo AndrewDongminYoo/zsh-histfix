@@ -1500,6 +1500,28 @@ HISTFILE=''
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.history.read_bytes(), b"echo existing\n")
 
+    def test_plugin_loads_through_plugin_manager_directory_convention(self):
+        # Oh My Zsh sources plugins/<name>/<name>.plugin.zsh from the user's directory.
+        plugins = self.home / "custom" / "plugins"
+        plugins.mkdir(parents=True)
+        (plugins / "histfix").symlink_to(ROOT, target_is_directory=True)
+        self.write(b"echo old\n")
+        result = self.run_zsh('''
+HISTFILE=$1
+HISTSIZE=100
+SAVEHIST=100
+fc -R "$HISTFILE"
+cd / || exit 90
+plugin=histfix
+source "$3/$plugin/$plugin.plugin.zsh" || exit 91
+[[ $_HISTFIX_HELPER == $4 ]] || exit 92
+histfix replace --dry-run old new || exit 93
+HISTFILE=''
+''', str(plugins), str(HELPER))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("1 entries would change.", result.stdout)
+        self.assertEqual(self.history.read_bytes(), b"echo old\n")
+
     def test_empty_shell_history_previews_and_refuses_writes(self):
         # Without fc -R, a -c command leaves the history list empty, and fc -AI
         # then writes no export file.

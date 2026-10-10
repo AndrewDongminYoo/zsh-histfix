@@ -16,7 +16,8 @@ Clone this repository, then add this after your history configuration in `.zshrc
 source /absolute/path/to/zsh-histfix/histfix.plugin.zsh
 ```
 
-Set `HISTFIX_PYTHON` before sourcing if `python3` is not on your `PATH`.
+Set `HISTFIX_PYTHON` if `python3` is not on your `PATH`.
+The plugin reads it each time `histfix` runs, so you can set it before or after sourcing.
 The plugin can coexist with Oh My Zsh and `zsh-autosuggestions`.
 It does not change key bindings or shell options persistently.
 It adds its own directory to `fpath` and registers completion for commands and options, but it never runs `compinit`.
@@ -30,6 +31,26 @@ source "$(brew --prefix)/share/histfix/histfix.plugin.zsh"
 ```
 
 Add the `source` line to `.zshrc` to load the installed plugin in new shells.
+
+### Oh My Zsh
+
+Oh My Zsh loads `plugins/<name>/<name>.plugin.zsh`, so clone into a directory named `histfix`:
+
+```zsh
+git clone https://github.com/AndrewDongminYoo/zsh-histfix.git "${ZSH_CUSTOM:-${ZSH:-$HOME/.oh-my-zsh}/custom}/plugins/histfix"
+```
+
+A clone in a directory named `zsh-histfix` is reported as `plugin 'zsh-histfix' not found`.
+
+Then add `histfix` to `plugins` in `.zshrc` and open a new shell:
+
+```zsh
+plugins=(git histfix)
+source "$ZSH/oh-my-zsh.sh"
+```
+
+Oh My Zsh enables `SHARE_HISTORY` in its `lib/history.zsh`.
+Replacement and undo work with that option, as described in [History and undo](#history-and-undo).
 
 ## Usage
 
