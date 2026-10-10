@@ -18,6 +18,7 @@ import tempfile
 import uuid
 
 
+__version__ = "0.1.0"
 APPLIED = 10
 VALIDATED = 11
 DRY_RUN_VALIDATED = 12
@@ -27,6 +28,7 @@ SELF_COMMAND = re.compile(r"^\s*(?:noglob\s+)?histfix(?:\s|$)")
 
 def arguments(argv):
     parser = argparse.ArgumentParser(prog="histfix", allow_abbrev=False)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
     replace = commands.add_parser("replace", help="preview and replace history text",
                                   allow_abbrev=False)
