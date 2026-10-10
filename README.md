@@ -23,14 +23,16 @@ It does not change key bindings or shell options persistently.
 It adds its own directory to `fpath` and registers completion for commands and options, but it never runs `compinit`.
 Completion works whether you source the plugin before or after `compinit`.
 
-The [Homebrew tap](https://github.com/AndrewDongminYoo/homebrew-tap) provides a HEAD-only development formula:
+The [Homebrew tap](https://github.com/AndrewDongminYoo/homebrew-tap) installs the latest release:
 
 ```zsh
-brew install --HEAD AndrewDongminYoo/tap/histfix
+brew install AndrewDongminYoo/tap/histfix
 source "$(brew --prefix)/share/histfix/histfix.plugin.zsh"
 ```
 
 Add the `source` line to `.zshrc` to load the installed plugin in new shells.
+Use `brew install --HEAD AndrewDongminYoo/tap/histfix` to install the `main` branch instead.
+`histfix --version` prints the installed version.
 
 ### Oh My Zsh
 

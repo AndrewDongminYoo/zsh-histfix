@@ -40,3 +40,7 @@ State the limits of cross-shell history synchronization in user documentation.
 Use pull requests for feature and CI changes.
 The operator controls merges and releases unless explicitly delegated.
 Keep the plugin PR and its dependent tap PR linked.
+
+`__version__` in `histfix.py` is the only version number in this repository.
+A release is a `vX.Y.Z` tag on `main` whose number matches `__version__`.
+After the tag exists, update `url` and `sha256` in the tap's `Formula/histfix.rb` by hand to the tag's source archive.
