@@ -1495,10 +1495,18 @@ print -s -- 'echo pending'
 histfix --help || exit 91
 histfix replace --regex '[' replacement
 [[ $? == 2 ]] || exit 92
+histfix --version || exit 93
 HISTFILE=''
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.history.read_bytes(), b"echo existing\n")
+        self.assertIn(f"histfix {self.load_helper().__version__}\n", result.stdout)
+
+    def test_version_is_a_release_number(self):
+        version = self.load_helper().__version__
+        self.assertRegex(version, r"\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
+        result = self.run_helper("--version", answer="")
+        self.assertEqual((result.returncode, result.stdout), (0, f"histfix {version}\n"))
 
     def test_plugin_loads_through_plugin_manager_directory_convention(self):
         # Oh My Zsh sources plugins/<name>/<name>.plugin.zsh from the user's directory.
@@ -1629,6 +1637,7 @@ source "$3/histfix.plugin.zsh" || exit 91
                 ("histfix rep", "histfix replace "),
                 ("histfix replace --ig", "histfix replace --ignore-case "),
                 ("histfix undo --dr", "histfix undo --dry-run "),
+                ("histfix --vers", "histfix --version "),
                 ("histfix replace --regex fo", "histfix replace --regex fo"),
                 ("histfix replace -- --x", "histfix replace -- --x"),
                 ("histfix undo -- --dr", "histfix undo -- --dr"),

@@ -10,6 +10,7 @@ commands=(
 
 _arguments -C \
   '(- *)'{-h,--help}'[show help]' \
+  '(- *)--version[show version]' \
   '1: :->command' \
   '*:: :->argument' && ret=0
 
