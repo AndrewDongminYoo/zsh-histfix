@@ -1631,6 +1631,8 @@ source "$3/histfix.plugin.zsh" || exit 91
                 ("histfix undo --dr", "histfix undo --dry-run "),
                 ("histfix replace --regex fo", "histfix replace --regex fo"),
                 ("histfix replace -- --x", "histfix replace -- --x"),
+                ("histfix undo -- --dr", "histfix undo -- --dr"),
+                ("histfix undo -- --he", "histfix undo -- --he"),
             ):
                 with self.subTest(typed):
                     output = b""
