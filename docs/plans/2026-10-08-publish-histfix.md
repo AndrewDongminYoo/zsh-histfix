@@ -14,6 +14,10 @@ Keep implementation and packaging in separate repositories, with the plugin PR m
    Verify equivalent behavior with `make check`; retain the observed failing regression evidence from initial implementation.
 3. Add `.github/workflows/ci.yml`, `Makefile`, and `.trunk/` checks.
    Exercise Linux/Python 3.9, Linux/Python 3.14, and macOS/Python 3.14 in hosted CI.
+
+   Current coverage (2026-10-28): `.github/workflows/ci.yml` runs Python 3.14 on Linux and macOS.
+   Python 3.9 remains the supported runtime floor and is checked locally during this maintenance; the original publication target above is retained as historical scope.
+
 4. Review history persistence and shell integration independently before publication.
    Reviewers are read-only and return findings to the root.
    Root owns repairs, staging, commits, and remote writes.

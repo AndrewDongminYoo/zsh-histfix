@@ -11,7 +11,7 @@ This file adds only what needs several files to understand.
 ## Running tests
 
 All tests are in one `unittest` class, `HistfixTests`, in `tests/test_histfix.py`.
-Run one test by name from any directory:
+Run one test by name from the repository root:
 
 ```bash
 python3 tests/test_histfix.py HistfixTests.test_regex_capture_groups_and_all_occurrences
@@ -24,7 +24,8 @@ The test helpers use three levels of isolation:
 - `interactive_zsh` drives a real `zsh -f -i` through a pseudoterminal for the prompt-time behavior that `-c` cannot reach.
 
 `load_helper` imports `histfix.py` as a module so that tests can patch internals such as `atomic_write` and the process probes.
-The native macOS identity test runs only on `darwin`; CI covers Linux on Python 3.9 and 3.14.
+The native macOS identity test runs only on `darwin`; CI covers Python 3.14 on Linux and macOS.
+Use `HISTFIX_PYTHON=python3.9 make check PYTHON=python3.9` to check the supported runtime floor locally, including zsh plugin calls.
 
 Two fixture traps:
 

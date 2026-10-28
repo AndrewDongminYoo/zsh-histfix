@@ -19,12 +19,14 @@ Homebrew packaging is maintained in `AndrewDongminYoo/homebrew-tap`.
 
 ```bash
 make check
-trunk check --no-fix
+trunk check --all --no-fix --jobs=2
 ```
 
 Use `trunk fmt` only with explicit paths after reviewing the formatter diff.
 Do not run ShellCheck on `.zsh` files; validate them with `zsh -n` and real zsh tests.
-CI tests the supported Python floor on Linux and current Python on Linux and macOS.
+CI tests Python 3.14 on Linux and macOS.
+Check the supported Python 3.9 floor locally with `HISTFIX_PYTHON=python3.9 make check PYTHON=python3.9`.
+`PYTHON` selects the syntax-check and test interpreter; `HISTFIX_PYTHON` selects the interpreter used by the zsh plugin.
 
 ## History safety
 
