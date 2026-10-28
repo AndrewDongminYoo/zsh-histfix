@@ -2,21 +2,20 @@
 
 import argparse
 import base64
-from collections import defaultdict
-from contextlib import contextmanager
 import ctypes
 import fcntl
 import io
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import struct
 import sys
 import tempfile
 import uuid
-
+from collections import defaultdict
+from contextlib import contextmanager
+from pathlib import Path
 
 __version__ = "0.1.0"
 APPLIED = 10
@@ -28,17 +27,23 @@ SELF_COMMAND = re.compile(r"^\s*(?:noglob\s+)?histfix(?:\s|$)")
 
 def arguments(argv):
     parser = argparse.ArgumentParser(prog="histfix", allow_abbrev=False)
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
-    replace = commands.add_parser("replace", help="preview and replace history text",
-                                  allow_abbrev=False)
+    replace = commands.add_parser(
+        "replace", help="preview and replace history text", allow_abbrev=False
+    )
     replace.add_argument("--regex", action="store_true", help="use Python regex syntax")
     replace.add_argument("--ignore-case", action="store_true")
-    replace.add_argument("--dry-run", action="store_true", help="preview without applying")
+    replace.add_argument(
+        "--dry-run", action="store_true", help="preview without applying"
+    )
     replace.add_argument("find")
     replace.add_argument("replacement")
-    undo = commands.add_parser("undo", help="undo the last replacement",
-                               allow_abbrev=False)
+    undo = commands.add_parser(
+        "undo", help="undo the last replacement", allow_abbrev=False
+    )
     undo.add_argument("--dry-run", action="store_true")
     if not argv or argv == ["help"]:
         parser.print_help()
@@ -49,8 +54,10 @@ def arguments(argv):
             raise ValueError("find text must not be empty")
         if "\0" in args.find or "\0" in args.replacement:
             raise ValueError("NUL bytes are not supported")
-        args.pattern = re.compile(args.find if args.regex else re.escape(args.find),
-                                  re.IGNORECASE if args.ignore_case else 0)
+        args.pattern = re.compile(
+            args.find if args.regex else re.escape(args.find),
+            re.IGNORECASE if args.ignore_case else 0,
+        )
         if args.regex:
             for token in CAPTURE.finditer(args.replacement):
                 value = token[1]
@@ -116,7 +123,7 @@ def records(data):
         content = b"".join(logical)
         header = re.match(rb": -?[0-9]+:-?[0-9]+;", content)
         prefix = header[0] if header else b""
-        command = content[len(prefix):]
+        command = content[len(prefix) :]
         if not prefix and command.startswith(b"\\:"):
             command = command[1:]
         yield b"".join(physical), prefix, unmeta(command)
@@ -137,8 +144,10 @@ def encode_record(prefix, command):
 
 def display_command(command):
     quoted = json.dumps(command, ensure_ascii=False)
-    return "".join(character if character.isprintable() else f"\\u{ord(character):04x}"
-                   for character in quoted)
+    return "".join(
+        character if character.isprintable() else f"\\u{ord(character):04x}"
+        for character in quoted
+    )
 
 
 def preview(before, args):
@@ -149,8 +158,10 @@ def preview(before, args):
             output.append(raw)
             continue
         changed = args.pattern.sub(
-            lambda match: replacement(match, args.replacement) if args.regex
-            else args.replacement, command,
+            lambda match: (
+                replacement(match, args.replacement) if args.regex else args.replacement
+            ),
+            command,
         )
         if changed == command:
             output.append(raw)
@@ -196,14 +207,22 @@ def process_identity(pid):
             size = struct.calcsize(layout)
             buffer = ctypes.create_string_buffer(size)
             probe = ctypes.CDLL("/usr/lib/libproc.dylib").proc_pidinfo
-            probe.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
-                              ctypes.c_void_p, ctypes.c_int]
+            probe.argtypes = [
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint64,
+                ctypes.c_void_p,
+                ctypes.c_int,
+            ]
             probe.restype = ctypes.c_int
             # A nonzero argument includes unreaped zombies in PROC_PIDTBSDINFO.
             if probe(pid, 3, 1, buffer, size) == size:
                 values = struct.unpack(layout, buffer.raw)
                 if values[3] == pid and values[-2] > 0:
-                    return f"{values[-2]}:{values[-1]}", values[1] == 5  # SZOMB from sys/proc.h
+                    return (
+                        f"{values[-2]}:{values[-1]}",
+                        values[1] == 5,
+                    )  # SZOMB from sys/proc.h
     except (OSError, ValueError, IndexError):
         pass
     return None, None
@@ -231,17 +250,30 @@ def system_identity():
             get_host = libc.gethostuuid
             get_host.argtypes = [ctypes.c_void_p, ctypes.POINTER(Timespec)]
             get_host.restype = ctypes.c_int
-            if get_host(host_buffer, ctypes.byref(wait)) != 0 or not any(host_buffer.raw):
+            if get_host(host_buffer, ctypes.byref(wait)) != 0 or not any(
+                host_buffer.raw
+            ):
                 return None, None
             host = str(uuid.UUID(bytes=host_buffer.raw))
             boot_buffer = ctypes.create_string_buffer(37)  # UUID plus trailing NUL
             length = ctypes.c_size_t(len(boot_buffer))
             get_boot = libc.sysctlbyname
-            get_boot.argtypes = [ctypes.c_char_p, ctypes.c_void_p,
-                                 ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+            get_boot.argtypes = [
+                ctypes.c_char_p,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_size_t),
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+            ]
             get_boot.restype = ctypes.c_int
-            if (get_boot(b"kern.bootsessionuuid", boot_buffer, ctypes.byref(length), None, 0) != 0
-                    or length.value != len(boot_buffer) or boot_buffer.raw[-1:] != b"\0"):
+            if (
+                get_boot(
+                    b"kern.bootsessionuuid", boot_buffer, ctypes.byref(length), None, 0
+                )
+                != 0
+                or length.value != len(boot_buffer)
+                or boot_buffer.raw[-1:] != b"\0"
+            ):
                 return None, None
             boot = boot_buffer.raw[:-1].decode("ascii")
         else:
@@ -258,35 +290,58 @@ def system_identity():
 def lock_owner():
     host, boot = system_identity()
     try:
-        namespace = os.readlink("/proc/self/ns/pid") if sys.platform == "linux" else "host"
+        namespace = (
+            os.readlink("/proc/self/ns/pid") if sys.platform == "linux" else "host"
+        )
     except OSError:
         namespace = None
-    return dict(format="histfix-lock-v2", platform=sys.platform, host=host, boot=boot,
-                namespace=namespace, pid=os.getpid(), uid=os.getuid(), start=process_start(os.getpid()),
-                token=uuid.uuid4().hex)
+    return dict(
+        format="histfix-lock-v2",
+        platform=sys.platform,
+        host=host,
+        boot=boot,
+        namespace=namespace,
+        pid=os.getpid(),
+        uid=os.getuid(),
+        start=process_start(os.getpid()),
+        token=uuid.uuid4().hex,
+    )
 
 
 def abandoned_owner(owner, current):
     """Only a recognized owner on this host can be proved abandoned."""
     if not isinstance(owner, dict) or set(owner) != set(current):
         return False
-    if (owner["format"] != "histfix-lock-v2" or owner["platform"] != current["platform"]
-            or type(owner["pid"]) is not int or not 0 < owner["pid"] < 2**31
-            or type(owner["uid"]) is not int or owner["uid"] != os.getuid()):
+    if (
+        owner["format"] != "histfix-lock-v2"
+        or owner["platform"] != current["platform"]
+        or type(owner["pid"]) is not int
+        or not 0 < owner["pid"] < 2**31
+        or type(owner["uid"]) is not int
+        or owner["uid"] != os.getuid()
+    ):
         return False
     for key in ("host", "boot", "namespace", "start", "token"):
         if not isinstance(owner[key], str) or not owner[key] or not current[key]:
             return False
     namespace_pattern = r"pid:\[[1-9][0-9]*\]" if sys.platform == "linux" else r"host"
-    if (not isinstance(current["namespace"], str)
-            or not re.fullmatch(namespace_pattern, owner["namespace"])
-            or not re.fullmatch(namespace_pattern, current["namespace"])):
+    if (
+        not isinstance(current["namespace"], str)
+        or not re.fullmatch(namespace_pattern, owner["namespace"])
+        or not re.fullmatch(namespace_pattern, current["namespace"])
+    ):
         return False
-    if (not re.fullmatch(r"[0-9a-f]{32}", owner["token"])
-            or not re.fullmatch(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", owner["boot"])
-            or not re.fullmatch(r"[1-9][0-9]*:[0-9]{1,6}" if sys.platform == "darwin" else r"[0-9]+",
-                                owner["start"])
-            or owner["host"] != current["host"]):
+    if (
+        not re.fullmatch(r"[0-9a-f]{32}", owner["token"])
+        or not re.fullmatch(
+            r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", owner["boot"]
+        )
+        or not re.fullmatch(
+            r"[1-9][0-9]*:[0-9]{1,6}" if sys.platform == "darwin" else r"[0-9]+",
+            owner["start"],
+        )
+        or owner["host"] != current["host"]
+    ):
         return False
     if owner["boot"] != current["boot"]:
         return True  # Same machine rebooted; its old PID namespaces cannot have live owners.
@@ -312,8 +367,16 @@ def same_inode(path, info):
 
 
 def metadata_identity(info):
-    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
-            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_uid,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
 
 
 def read_lock_owner(directory_fd):
@@ -321,16 +384,25 @@ def read_lock_owner(directory_fd):
     try:
         if os.listdir(directory_fd) != ["owner.json"]:
             return None
-        fd = os.open("owner.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                     dir_fd=directory_fd)
+        fd = os.open(
+            "owner.json",
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd,
+        )
         with os.fdopen(fd, "rb") as metadata:
             info = os.fstat(metadata.fileno())
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_mode & 0o077 or info.st_nlink != 1
-                    or not 0 < info.st_size <= 4096):
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_mode & 0o077
+                or info.st_nlink != 1
+                or not 0 < info.st_size <= 4096
+            ):
                 return None
             data = metadata.read(4097)
-            if metadata_identity(os.fstat(metadata.fileno())) != metadata_identity(info):
+            if metadata_identity(os.fstat(metadata.fileno())) != metadata_identity(
+                info
+            ):
                 return None
             return info, data, json.loads(data)
     except (OSError, ValueError, UnicodeError):
@@ -341,12 +413,17 @@ def recover_history_lock(lock, current):
     # zsh age-unlinks .LOCK independently of our guard. Never unlink a pathname
     # it could replace with a live symlink: only histfix directories recover.
     info = lock.lstat()
-    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-            or info.st_mode & 0o077):
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.getuid()
+        or info.st_mode & 0o077
+    ):
         return False
     fd = os.open(lock, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        if metadata_identity(os.fstat(fd)) != metadata_identity(info) or not same_inode(lock, info):
+        if metadata_identity(os.fstat(fd)) != metadata_identity(info) or not same_inode(
+            lock, info
+        ):
             return False
         saved = read_lock_owner(fd)
         if saved is None:
@@ -355,8 +432,9 @@ def recover_history_lock(lock, current):
         if not abandoned_owner(owner, current) or not same_inode(lock, info):
             return False
         checked = os.stat("owner.json", dir_fd=fd, follow_symlinks=False)
-        if (metadata_identity(checked) != metadata_identity(metadata)
-                or os.listdir(fd) != ["owner.json"]):
+        if metadata_identity(checked) != metadata_identity(metadata) or os.listdir(
+            fd
+        ) != ["owner.json"]:
             return False
         # The opened directory stays stable; supported zsh writers cannot
         # unlink it. rmdir cannot remove a fresh zsh regular file or symlink.
@@ -386,12 +464,20 @@ def history_lock(target):
     lock = Path(str(target) + ".LOCK")
     busy = "history is locked by another process; try again (see README for manual recovery)"
     with private_lock_creation():
-        fd = os.open(guard, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        fd = os.open(
+            guard, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600
+        )
     with os.fdopen(fd, "r+b") as guard_stream:
         info = os.fstat(guard_stream.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_nlink != 1 or info.st_mode & 0o077):
-            raise ValueError("unrecognized histfix recovery guard; see README for manual recovery")
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_nlink != 1
+            or info.st_mode & 0o077
+        ):
+            raise ValueError(
+                "unrecognized histfix recovery guard; see README for manual recovery"
+            )
         try:
             fcntl.flock(guard_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
@@ -417,7 +503,9 @@ def history_lock(target):
         try:
             directory_fd = os.open(lock, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             if not same_inode(lock, os.fstat(directory_fd)):
-                raise ValueError("histfix lock directory changed; see README for manual recovery")
+                raise ValueError(
+                    "histfix lock directory changed; see README for manual recovery"
+                )
             # Atomic owner publication; a crash before publication leaves an
             # unrecognized directory for manual recovery, never a partial owner.
             atomic_write(lock / "owner.json", data, 0o600)
@@ -428,20 +516,31 @@ def history_lock(target):
         finally:
             try:
                 if same_inode(lock, acquired):
-                    saved = read_lock_owner(directory_fd) if directory_fd is not None else None
+                    saved = (
+                        read_lock_owner(directory_fd)
+                        if directory_fd is not None
+                        else None
+                    )
                     if saved is not None and saved[1] == data:
                         os.unlink("owner.json", dir_fd=directory_fd)
                         os.rmdir(lock)
-                    elif not published and (directory_fd is None or not os.listdir(directory_fd)):
+                    elif not published and (
+                        directory_fd is None or not os.listdir(directory_fd)
+                    ):
                         os.rmdir(lock)
                     else:
-                        print(f"histfix: lock changed; retained {lock} for manual recovery",
-                              file=sys.stderr)
+                        print(
+                            f"histfix: lock changed; retained {lock} for manual recovery",
+                            file=sys.stderr,
+                        )
             except OSError as error:
                 # The write may already have committed: cleanup failure must
                 # still allow the plugin to refresh its current-shell history.
-                print(f"histfix: could not remove lock directory {lock}: {error}; "
-                      "see README for manual recovery", file=sys.stderr)
+                print(
+                    f"histfix: could not remove lock directory {lock}: {error}; "
+                    "see README for manual recovery",
+                    file=sys.stderr,
+                )
             finally:
                 if directory_fd is not None:
                     os.close(directory_fd)
@@ -455,7 +554,7 @@ def confirm():
 def terminate_records(data):
     if data and not data.endswith(b"\n"):
         raw, prefix, command = list(records(data))[-1]
-        return data[:-len(raw)] + encode_record(prefix, command)
+        return data[: -len(raw)] + encode_record(prefix, command)
     return data
 
 
@@ -468,7 +567,9 @@ def prepare_memory_reload(before, after, memory, history_count):
     updated = list(records(after))
     retained = list(records(memory))
     if len(original) != len(updated):
-        raise ValueError("history record count changed; refusing to reload shell history")
+        raise ValueError(
+            "history record count changed; refusing to reload shell history"
+        )
 
     # Preserve memory order: fc -R can import disk events after newer commands.
     # Plain records have no timestamp; zsh assigns one when reading them.
@@ -484,16 +585,22 @@ def prepare_memory_reload(before, after, memory, history_count):
         plain = (None, event[2])
         keys = [key for key in dict.fromkeys((exact, plain)) if available[key]]
         if not keys:
-            raise ValueError("current shell has memory-only history; refusing to reload it")
+            raise ValueError(
+                "current shell has memory-only history; refusing to reload it"
+            )
         if len(set().union(*(destinations[key] for key in keys))) != 1:
-            raise ValueError("current shell history has ambiguous duplicates; refusing to reload it")
+            raise ValueError(
+                "current shell history has ambiguous duplicates; refusing to reload it"
+            )
         mapping.append(available[keys[0]].pop())
     if len(retained) != history_count + 1:
         raise ValueError("incomplete shell history snapshot; refusing to reload it")
     if retained[-1][2] != updated[mapping[-1]][2]:
         raise ValueError("cannot reload a changed active history event")
-    return b"".join(encode_record(event[1], updated[index][2])
-                    for event, index in zip(retained, mapping))
+    return b"".join(
+        encode_record(event[1], updated[index][2])
+        for event, index in zip(retained, mapping)
+    )
 
 
 def commit_replacement(target, after, info, backup, saved):
@@ -506,8 +613,10 @@ def commit_replacement(target, after, info, backup, saved):
             previous.unlink(missing_ok=True)
             recovery.rmdir()
         except OSError as error:
-            print(f"histfix: could not remove undo recovery directory {recovery}: {error}",
-                  file=sys.stderr)
+            print(
+                f"histfix: could not remove undo recovery directory {recovery}: {error}",
+                file=sys.stderr,
+            )
 
     prepared = False
     try:
@@ -525,7 +634,9 @@ def commit_replacement(target, after, info, backup, saved):
                 else:
                     backup.unlink(missing_ok=True)
             except OSError as recovery_error:
-                raise OSError(f"{error}; undo recovery failed; retained files: {recovery}") from recovery_error
+                raise OSError(
+                    f"{error}; undo recovery failed; retained files: {recovery}"
+                ) from recovery_error
         cleanup()
         raise
     # Cleanup failure after commit must not roll back the now-valid undo record.
@@ -560,8 +671,12 @@ def main(argv):
             list(records(pending))
             with history_lock(target) as stream:
                 info = os.fstat(stream.fileno())
-                atomic_write(target, append_records(stream.read(), pending),
-                             stat.S_IMODE(info.st_mode), gid=info.st_gid)
+                atomic_write(
+                    target,
+                    append_records(stream.read(), pending),
+                    stat.S_IMODE(info.st_mode),
+                    gid=info.st_gid,
+                )
         return 0
     before = target.read_bytes()
     backup = Path(str(target) + ".histfix-undo.json")
@@ -579,8 +694,10 @@ def main(argv):
         applied = base64.b64decode(saved["after"], validate=True)
         normalized = terminate_records(applied)
         if not applied or (before != applied and not before.startswith(normalized)):
-            raise ValueError("history changed since replacement; refusing to overwrite it")
-        appended = b"" if before == applied else before[len(normalized):]
+            raise ValueError(
+                "history changed since replacement; refusing to overwrite it"
+            )
+        appended = b"" if before == applied else before[len(normalized) :]
         after = append_records(previous, appended)
         print("Undo the last replacement; keep entries appended since then.")
     if args.dry_run:
@@ -590,31 +707,55 @@ def main(argv):
         return 0
     memory_name = os.environ.get("HISTFIX_MEMORY")
     memory_target = Path(memory_name) if memory_name else None
-    memory_after = prepare_memory_reload(before, after, memory_target.read_bytes(),
-                                         int(os.environ["HISTFIX_HISTORY_COUNT"])) if memory_target else None
+    memory_after = (
+        prepare_memory_reload(
+            before,
+            after,
+            memory_target.read_bytes(),
+            int(os.environ["HISTFIX_HISTORY_COUNT"]),
+        )
+        if memory_target
+        else None
+    )
     with history_lock(target) as stream:
         current = target.stat()
-        if ((current.st_dev, current.st_ino, current.st_mode, current.st_uid, current.st_gid)
-                != (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
-                or stream.read() != before):
+        if (
+            current.st_dev,
+            current.st_ino,
+            current.st_mode,
+            current.st_uid,
+            current.st_gid,
+        ) != (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_uid,
+            info.st_gid,
+        ) or stream.read() != before:
             raise ValueError("history changed during preview; run histfix again")
         if memory_target is not None:
             atomic_write(memory_target, memory_after, 0o600)
         if args.command == "replace":
-            saved = json.dumps({
-                "before": base64.b64encode(before).decode("ascii"),
-                "after": base64.b64encode(after).decode("ascii"),
-            }).encode("utf-8")
+            saved = json.dumps(
+                {
+                    "before": base64.b64encode(before).decode("ascii"),
+                    "after": base64.b64encode(after).decode("ascii"),
+                }
+            ).encode("utf-8")
             commit_replacement(target, after, info, backup, saved)
         else:
             if backup.read_bytes() != undo_data:
-                raise ValueError("undo record changed during preview; run histfix again")
+                raise ValueError(
+                    "undo record changed during preview; run histfix again"
+                )
             atomic_write(target, after, stat.S_IMODE(info.st_mode), gid=info.st_gid)
             try:
                 backup.unlink()
             except OSError as error:
-                print(f"histfix: could not remove undo backup {backup}: {error}",
-                      file=sys.stderr)
+                print(
+                    f"histfix: could not remove undo backup {backup}: {error}",
+                    file=sys.stderr,
+                )
     print("History updated." if args.command == "replace" else "Replacement undone.")
     return APPLIED
 
