@@ -12,12 +12,14 @@ Homebrew packaging is maintained in `AndrewDongminYoo/homebrew-tap`.
 - `_histfix`: zsh completion for commands and options.
 - `histfix.py`: literal and regex replacements, zsh history encoding, preview, atomic writes, and undo.
 - `tests/test_histfix.py`: isolated file, zsh, and pseudoterminal regression tests.
+- `.trunk/configs/trufflehog_to_sarif.py` and its `tests/` directory: offline filesystem JSONL-to-SARIF conversion and subprocess regression tests.
 - `docs/specs/` and `docs/plans/`: behavior contracts and implementation plans.
 - `docs/notes/`: durable project notes when needed.
 
 ## Checks
 
 ```bash
+python3 -B -m unittest discover -s .trunk/configs/tests -p 'test_*.py'
 make check
 trunk check --all --no-fix --jobs=2
 ```

@@ -32,6 +32,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
+      - name: Test the TruffleHog filesystem reader
+        run: python -B -m unittest discover -s .trunk/configs/tests -p 'test_*.py'
       - name: Install Linux test tools
         if: runner.os == 'Linux'
         run: |

@@ -18,6 +18,11 @@ lint:
       commands:
         - name: lint
           run: trufflehog filesystem --json --fail --no-verification --no-update ${target}
+          direct_configs:
+            - .trunk/configs/trufflehog_to_sarif.py
+          parser:
+            runtime: python
+            run: python3 .trunk/configs/trufflehog_to_sarif.py
   enabled:
     - actionlint@1.7.12
     - bandit@1.9.4
