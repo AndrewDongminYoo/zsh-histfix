@@ -24,7 +24,7 @@ The test helpers use three levels of isolation:
 - `interactive_zsh` drives a real `zsh -f -i` through a pseudoterminal for the prompt-time behavior that `-c` cannot reach.
 
 `load_helper` imports `histfix.py` as a module so that tests can patch internals such as `atomic_write` and the process probes.
-The native macOS identity test runs only on `darwin`; CI covers Python 3.14 on Linux and macOS.
+The native macOS identity test runs only on `darwin`; CI covers Python 3.9 on Linux and Python 3.14 on Linux and macOS.
 Use `HISTFIX_PYTHON=python3.9 make check PYTHON=python3.9` to check the supported runtime floor locally, including zsh plugin calls.
 
 The TruffleHog filesystem reader has a separate subprocess regression suite, also run in CI:

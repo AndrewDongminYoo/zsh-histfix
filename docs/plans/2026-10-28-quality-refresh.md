@@ -19,5 +19,5 @@
 
 `make check` covers `zsh -n histfix.plugin.zsh`, `zsh -n _histfix`, Python AST parsing, ShellCheck of `tests/test-unit.sh`, and the complete isolated test suite.
 Set `HISTFIX_PYTHON` to the same interpreter in the child environment so the zsh plugin also exercises the selected runtime.
-CI currently runs Python 3.14 on Linux and macOS; the Python 3.9 floor check is local.
+CI runs Python 3.9 on Linux and Python 3.14 on Linux and macOS, preserving every required branch status context.
 Save exact commands, interpreter paths, exits, semantic checks, canary results, and remaining limits in the visible review directory.

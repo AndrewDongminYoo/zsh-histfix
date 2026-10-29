@@ -224,5 +224,5 @@ make check
 trunk check --all --no-fix --jobs=2
 ```
 
-CI runs `make check` with Python 3.14 on Linux and macOS.
+CI runs `make check` with Python 3.9 on Linux and Python 3.14 on Linux and macOS.
 To check the supported Python 3.9 floor locally, run `HISTFIX_PYTHON=python3.9 make check PYTHON=python3.9` with that interpreter installed.
