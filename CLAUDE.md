@@ -25,6 +25,7 @@ The test helpers use three levels of isolation:
 
 `load_helper` imports `histfix.py` as a module so that tests can patch internals such as `atomic_write` and the process probes.
 The native macOS identity test runs only on `darwin`; CI covers Python 3.9 on Linux and Python 3.14 on Linux and macOS.
+The required Python 3.9 check retains its historical `ubuntu-latest` name and uses Ubuntu 24.04, which has an official setup-python build.
 Use `HISTFIX_PYTHON=python3.9 make check PYTHON=python3.9` to check the supported runtime floor locally, including zsh plugin calls.
 
 The TruffleHog filesystem reader has a separate subprocess regression suite, also run in CI:

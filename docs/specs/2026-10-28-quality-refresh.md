@@ -21,6 +21,7 @@ Guard only the unreaped-owner test when the interpreter lacks `waitid`, `P_PID`,
 - The reader preserves decoded-only findings at file level when `Raw` has no literal match, reports available literal locations, fails invalid conversion without emitting clean SARIF, and accepts a clean control.
 - `python3 -B -m unittest discover -s .trunk/configs/tests -p 'test_*.py'` passes; CI runs this reader suite on Python 3.9 on Linux and Python 3.14 on Linux and macOS.
 - Tooling, CI, and runtime claims in the affected knowledge files match the current configuration.
+- The required Python 3.9 context runs on Ubuntu 24.04 until setup-python provides a compatible build for newer Ubuntu runners.
 
 ## History Safety
 

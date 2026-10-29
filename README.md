@@ -225,4 +225,6 @@ trunk check --all --no-fix --jobs=2
 ```
 
 CI runs `make check` with Python 3.9 on Linux and Python 3.14 on Linux and macOS.
+The Python 3.9 job runs on Ubuntu 24.04 because setup-python does not provide a 3.9 build for Ubuntu 26.04.
+Its historical `ubuntu-latest` check name is retained for the existing branch protection rule.
 To check the supported Python 3.9 floor locally, run `HISTFIX_PYTHON=python3.9 make check PYTHON=python3.9` with that interpreter installed.
