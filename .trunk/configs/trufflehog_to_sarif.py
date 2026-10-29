@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 
-def physical_location(filename, secret, files, offsets):
+def physical_location(filename, secret, line_hint, files, offsets):
     location = {"artifactLocation": {"uri": filename}}
     if filename not in files:
         try:
@@ -18,10 +18,26 @@ def physical_location(filename, secret, files, offsets):
     if not secret or content is None:
         return location
 
-    key = (filename, secret)
-    position = content.find(secret, offsets.get(key, 0))
+    position = -1
+    if isinstance(line_hint, int) and not isinstance(line_hint, bool) and line_hint > 0:
+        line_start = 0
+        for _ in range(line_hint - 1):
+            newline = content.find("\n", line_start)
+            if newline < 0:
+                break
+            line_start = newline + 1
+        else:
+            candidate = content.find(secret, line_start)
+            line_end = content.find("\n", line_start)
+            if candidate >= 0 and (line_end < 0 or candidate <= line_end):
+                position = candidate
+
+    if position < 0:
+        key = (filename, secret)
+        position = content.find(secret, offsets.get(key, 0))
+        if position >= 0:
+            offsets[key] = position + 1
     if position >= 0:
-        offsets[key] = position + 1
         location["region"] = {
             "startLine": content.count("\n", 0, position) + 1,
             "startColumn": position - content.rfind("\n", 0, position),
@@ -50,7 +66,11 @@ def to_result(finding, files, offsets):
         "ruleId": detector,
         "message": {"text": "Secret detected"},
         "locations": [
-            {"physicalLocation": physical_location(filename, secret, files, offsets)}
+            {
+                "physicalLocation": physical_location(
+                    filename, secret, filesystem.get("line"), files, offsets
+                )
+            }
         ],
     }
 
