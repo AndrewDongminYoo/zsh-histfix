@@ -217,7 +217,7 @@ skipped, as described in [History and undo](#history-and-undo).
 
 ## Development
 
-Tests use temporary files and isolated zsh processes; they do not read the operator's history.
+Tests use temporary files and isolated zsh processes; they do not read the user's history.
 
 ```bash
 make check
