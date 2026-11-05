@@ -25,7 +25,7 @@ Guard only the unreaped-owner test when the interpreter lacks `waitid`, `P_PID`,
 
 ## History Safety
 
-Never read or write the operator's history or source shell startup files.
+Never read or write the user's history or source shell startup files.
 Use only disposable history files and `zsh -f` child processes with isolated `HOME` and `ZDOTDIR` values.
 Keep the existing isolation assertions, lock algorithms, shell plugin, completion, test assertions, and release version unchanged.
 
