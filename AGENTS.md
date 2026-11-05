@@ -33,7 +33,7 @@ Check the supported Python 3.9 floor locally with `HISTFIX_PYTHON=python3.9 make
 
 ## History safety
 
-Never test against an operator's real history or source their shell startup files.
+Never test against a user's real history or source their shell startup files.
 Use temporary directories and `zsh -f` with an isolated `HOME` and `ZDOTDIR`.
 Preserve record boundaries, timestamps, encoding, permissions, and unrelated commands.
 Keep replacement text inert; never evaluate it as shell code.
@@ -43,7 +43,7 @@ State the limits of cross-shell history synchronization in user documentation.
 ## Publishing
 
 Use pull requests for feature and CI changes.
-The operator controls merges and releases unless explicitly delegated.
+The user controls merges and releases unless explicitly delegated.
 Keep the plugin PR and its dependent tap PR linked.
 
 `__version__` in `histfix.py` is the only version number in this repository.
