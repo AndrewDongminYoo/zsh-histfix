@@ -2,7 +2,7 @@
 
 ## Direction
 
-The operator approved creating a public repository, adding CI, and opening PRs.
+Creating a public repository, adding CI, and opening PRs were approved.
 Keep implementation and packaging in separate repositories, with the plugin PR merged first.
 
 ## Steps

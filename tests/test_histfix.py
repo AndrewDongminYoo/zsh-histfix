@@ -157,7 +157,7 @@ class HistfixTests(unittest.TestCase):
                 )
 
     def run_zsh(self, script, *args):
-        # -f skips the operator's rc files. All history paths belong to this test.
+        # -f skips the user's rc files. All history paths belong to this test.
         # trunk-ignore(bandit/B603,bandit/B607): Fixed zsh -f argv; isolated HOME, ZDOTDIR, and temporary history.
         return subprocess.run(
             [
